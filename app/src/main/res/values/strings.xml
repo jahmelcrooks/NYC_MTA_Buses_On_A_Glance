@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">NYC Buses On A Glance</string>
+    <string name="tile_label">Nearby NYC Buses</string>
+    <string name="complication_label">Next Bus Arrival</string>
+</resources>
