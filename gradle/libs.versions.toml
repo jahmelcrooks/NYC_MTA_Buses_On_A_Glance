@@ -13,8 +13,7 @@ tiles = "1.4.0"
 tilesMaterial = "1.4.0"
 tilesTooling = "1.4.0"
 tilesToolingPreview = "1.4.0"
-horologistComposeTools = "0.7.15"
-horologistTiles = "0.7.15"
+horologistTools = "0.7.15"
 watchfaceComplicationsDataSourceKtx = "1.2.1"
 retrofit = "2.9.0"
 okhttp = "4.12.0"
@@ -46,11 +45,8 @@ tiles = { group = "androidx.wear.tiles", name = "tiles", version.ref = "tiles" }
 tiles-material = { group = "androidx.wear.tiles", name = "tiles-material", version.ref = "tilesMaterial" }
 tiles-tooling = { group = "androidx.wear.tiles", name = "tiles-tooling", version.ref = "tilesTooling" }
 tiles-tooling-preview = { group = "androidx.wear.tiles", name = "tiles-tooling-preview", version.ref = "tilesToolingPreview" }
-horologist-compose-layout = { group = "com.google.android.horologist", name = "horologist-compose-layout", version.ref = "horologistComposeTools" }
-horologist-compose-material = { group = "com.google.android.horologist", name = "horologist-compose-material", version.ref = "horologistComposeTools" }
-horologist-compose-tools = { group = "com.google.android.horologist", name = "horologist-compose-tools", version.ref = "horologistComposeTools" }
-horologist-composables = { group = "com.google.android.horologist", name = "horologist-composables", version.ref = "horologistComposeTools" }
-horologist-tiles = { group = "com.google.android.horologist", name = "horologist-tiles", version.ref = "horologistTiles" }
+horologist-compose-tools = { group = "com.google.android.horologist", name = "horologist-compose-tools", version.ref = "horologistTools" }
+horologist-tiles = { group = "com.google.android.horologist", name = "horologist-tiles", version.ref = "horologistTools" }
 watchface-complications-data-source-ktx = { group = "androidx.wear.watchface", name = "watchface-complications-data-source-ktx", version.ref = "watchfaceComplicationsDataSourceKtx" }
 retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }

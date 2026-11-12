@@ -6,10 +6,9 @@ import androidx.wear.watchface.complications.data.PlainComplicationText
 import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.SuspendingComplicationDataSourceService
-import java.util.Calendar
 
 /**
- * Skeleton for complication data source that returns short text.
+ * Complication data source that displays the user's pinned favorite bus route on the watch face.
  */
 class MainComplicationService : SuspendingComplicationDataSourceService() {
 
@@ -17,23 +16,20 @@ class MainComplicationService : SuspendingComplicationDataSourceService() {
         if (type != ComplicationType.SHORT_TEXT) {
             return null
         }
-        return createComplicationData("Mon", "Monday")
+        return createComplicationData("B41", "Pinned Bus Route B41")
     }
 
     override suspend fun onComplicationRequest(request: ComplicationRequest): ComplicationData {
-        return when (Calendar.getInstance()[Calendar.DAY_OF_WEEK]) {
-            Calendar.SUNDAY -> createComplicationData("Sun", "Sunday")
-            Calendar.MONDAY -> createComplicationData("Mon", "Monday")
-            Calendar.TUESDAY -> createComplicationData("Tue", "Tuesday")
-            Calendar.WEDNESDAY -> createComplicationData("Wed", "Wednesday")
-            Calendar.THURSDAY -> createComplicationData("Thu", "Thursday")
-            Calendar.FRIDAY -> createComplicationData("Fri!", "Friday!")
-            Calendar.SATURDAY -> createComplicationData("Sat", "Saturday")
-            else -> throw IllegalArgumentException("too many days")
-        }
+        val prefs = applicationContext.getSharedPreferences("nyc_buses_prefs", MODE_PRIVATE)
+        val pinnedRoutes = prefs.getStringSet("pinned_routes", emptySet()) ?: emptySet()
+
+        val topRoute = pinnedRoutes.firstOrNull() ?: "MTA"
+        val contentDesc = if (pinnedRoutes.isNotEmpty()) "Pinned Bus Route $topRoute" else "NYC Bus Transit"
+
+        return createComplicationData(topRoute, contentDesc)
     }
 
-    private fun createComplicationData(text: String, contentDescription: String) =
+    private fun createComplicationData(text: String, contentDescription: String): ComplicationData =
         ShortTextComplicationData.Builder(
             text = PlainComplicationText.Builder(text).build(),
             contentDescription = PlainComplicationText.Builder(contentDescription).build(),
