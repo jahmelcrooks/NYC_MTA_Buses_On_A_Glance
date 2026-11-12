@@ -256,6 +256,12 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
             Log.d(TAG, "Tile update info: ${e.message}")
         }
 
+        try {
+            com.dngro.transit.complication.MainComplicationService.requestUpdate(getApplication())
+        } catch (e: Exception) {
+            Log.d(TAG, "Complication update info: ${e.message}")
+        }
+
         _uiState.update { state ->
             if (state is UiState.Success) {
                 val updatedRoutes = state.routes.map { route ->

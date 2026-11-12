@@ -11,7 +11,8 @@ A 100% standalone **Wear OS** Android application designed for quick, seamless a
 * **⭐ Persistent Favorites ("Hold to Pin"):** Long-press or tap the star icon (⭐) on any bus route to pin it to the top of your list. Saved to disk in `SharedPreferences` so your favorites persist anywhere you go.
 * **⚡ 1-Tap Drop-Down Schedules:** Tap any bus card (**B41**, **B44-SBS**, **M15**) to immediately reveal live arrival ETAs, clock times, and distance to your stop.
 * **🎨 Pastel MTA Design System:** Soft MTA Pastel Blue (`#5C9CE6`), Pastel Gold (`#FFD166`), Pastel Green (`#70C1B3`), and SBS Purple (`#B39DDB`) styling over OLED-friendly true black.
-* **🧩 Wear OS Tile:** Includes a Glance/ProtoLayout Tile displaying your starred favorite buses right on your watch face.
+* **🧩 Wear OS Tile:** A swipe-in Tile listing your starred routes; tapping it opens the app.
+* **🕐 Watch-Face Complication:** A short-text complication showing your first starred route (alphabetically); tapping it opens the app. It shows the route name only, not arrival times.
 
 ---
 
@@ -48,14 +49,4 @@ Open the project in **Android Studio**, select your Wear OS device or emulator, 
 
 ## 📄 License
 
-```text
-MIT License
-
-Copyright (c) 2025
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction rights, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software...
-```
+MIT. See [LICENSE](LICENSE).
