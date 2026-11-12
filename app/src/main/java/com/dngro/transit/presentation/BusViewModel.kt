@@ -152,11 +152,18 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun showRoutes(routes: List<BusRouteUiModel>) {
         lastLoadedAtMillis = SystemClock.elapsedRealtime()
+        // Re-read the stars now: the user may have starred a route while this refresh ran.
         val pinned = _pinnedRouteIds.value
+        val displayRoutes = routes
+            .map { it.copy(isPinned = it.routeShortName in pinned) }
+            .sortedWith(
+                compareByDescending<BusRouteUiModel> { it.isPinned }
+                    .thenBy { it.nearestStopDistanceMeters },
+            )
         _uiState.update { current ->
             val previous = current as? UiState.Success
             UiState.Success(
-                routes = routes,
+                routes = displayRoutes,
                 expandedRouteIds = previous?.expandedRouteIds.orEmpty(),
                 expandedDirectionIds = previous?.expandedDirectionIds.orEmpty(),
                 pinnedRouteIds = pinned,
@@ -181,7 +188,8 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Uses a recent cached fix immediately; otherwise asks for a fresh one and gives up
-     * after [LOCATION_TIMEOUT_MS], falling back to any cached fix. Returns null if neither works.
+     * after [LOCATION_TIMEOUT_MS], falling back to a cached fix only if it is under 5 minutes old
+     * (an old fix would show buses near somewhere the user has already left). Returns null otherwise.
      * Callers must already hold a location permission.
      */
     @SuppressLint("MissingPermission")
@@ -207,7 +215,7 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
                 } catch (e: Exception) {
                     null
                 }
-            } ?: cached
+            } ?: cached?.takeIf { ageNanos(it) < MAX_FALLBACK_FIX_NANOS }
         } finally {
             cancellation.cancel()
         }
@@ -291,6 +299,9 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         const val STALE_AFTER_MS = 60_000L
         const val LOCATION_TIMEOUT_MS = 15_000L
         const val FRESH_FIX_NANOS = 60_000_000_000L // 60 s
+
+        /** A cached fix older than this is not trusted as "where the user is now". */
+        const val MAX_FALLBACK_FIX_NANOS = 300_000_000_000L // 5 min
     }
 }
 

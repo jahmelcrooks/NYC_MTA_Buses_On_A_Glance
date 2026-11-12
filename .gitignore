@@ -7,4 +7,8 @@
 /captures
 .externalNativeBuild
 .cxx
-local.properties
+.kotlin/
+*.jks
+*.keystore
+*.hprof
+/app/release/
