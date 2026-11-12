@@ -24,7 +24,6 @@ android {
         }
 
         buildConfigField("String", "MTA_API_KEY", "\"${localProperties.getProperty("mta.api.key") ?: ""}\"")
-        buildConfigField("String", "GEMINI_API_KEY", "\"${localProperties.getProperty("gemini.api.key") ?: ""}\"")
     }
 
     buildTypes {
@@ -61,7 +60,6 @@ dependencies {
     implementation(libs.wear.tooling.preview)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.viewmodel.compose)
-    implementation(libs.generativeai)
     implementation(libs.core.splashscreen)
     implementation(libs.tiles)
     implementation(libs.tiles.material)
