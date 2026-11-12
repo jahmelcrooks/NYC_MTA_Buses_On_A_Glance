@@ -8,7 +8,7 @@ A 100% standalone **Wear OS** Android application designed for quick, seamless a
 
 * **⌚ 100% Standalone Watch App:** Runs independently on your Wear OS watch with zero reliance on a companion phone app (`standalone="true"`).
 * **📍 On-Watch GPS & Proximity Math:** Uses `FusedLocationProviderClient` with `PRIORITY_HIGH_ACCURACY` to calculate real-time distance from your wrist to nearby stops within a **0.5-mile (805m)** radius.
-* **⭐ Persistent Favorites ("Hold to Pin"):** Long-press or tap the star icon (⭐) on any bus route to pin it to the top of your list. Saved to disk in `SharedPreferences` so your favorites persist anywhere you go.
+* **⭐ Persistent Favorites ("Hold to Pin"):** Tap the star icon (⭐) on any bus route to pin it to the top of your list. Saved to disk in `SharedPreferences` so your favorites persist anywhere you go.
 * **⚡ 1-Tap Drop-Down Schedules:** Tap any bus card (**B41**, **B44-SBS**, **M15**) to immediately reveal live arrival ETAs, clock times, and distance to your stop.
 * **🎨 Pastel MTA Design System:** Soft MTA Pastel Blue (`#5C9CE6`), Pastel Gold (`#FFD166`), Pastel Green (`#70C1B3`), and SBS Purple (`#B39DDB`) styling over OLED-friendly true black.
 * **🧩 Wear OS Tile:** A swipe-in Tile listing your starred routes; tapping it opens the app.
@@ -40,10 +40,16 @@ Create a `local.properties` file in the root directory (if it doesn't already ex
 mta.api.key=YOUR_MTA_BUS_TIME_API_KEY
 ```
 
-> ⚠️ **Note:** `local.properties` is ignored by `.gitignore` so your private API keys will never be committed to Git.
+> ⚠️ **Note:** `local.properties` is ignored by `.gitignore`, so the key is never committed to Git. But the key **is compiled into the APK** (`BuildConfig`), where anyone with the file can extract it. Don't publish a build made with a key you aren't willing to expose and rotate.
 
 ### 3. Build & Run
 Open the project in **Android Studio**, select your Wear OS device or emulator, and click **Run ▶**.
+
+---
+
+## ⚖️ Disclaimer
+
+Unofficial app, not affiliated with or endorsed by the MTA. Transit data comes from the MTA Bus Time API and is subject to MTA's terms of use.
 
 ---
 
