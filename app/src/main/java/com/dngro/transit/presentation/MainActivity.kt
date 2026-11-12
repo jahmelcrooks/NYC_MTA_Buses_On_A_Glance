@@ -1,6 +1,24 @@
 package com.dngro.transit.presentation
 
 import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.wear.compose.material.Chip
+import androidx.wear.compose.material.ChipDefaults
+import kotlinx.coroutines.delay
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -75,34 +93,80 @@ class MainActivity : ComponentActivity() {
         setContent {
             TransitTheme {
                 val viewModel: BusViewModel = viewModel()
+                val context = LocalContext.current
+                val lifecycleOwner = LocalLifecycleOwner.current
+                var hasPermission by remember { mutableStateOf(context.hasLocationPermission()) }
                 val permissionLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) { permissions ->
-                    if (permissions.values.any { it }) {
-                        viewModel.refresh()
+                    hasPermission = permissions.values.any { it }
+                }
+
+                // Ask straight away on first launch, but only if we don't already have it.
+                LaunchedEffect(Unit) {
+                    if (!hasPermission) permissionLauncher.launch(LOCATION_PERMISSIONS)
+                }
+
+                // Pick up a permission granted in system Settings when the user returns.
+                LaunchedEffect(lifecycleOwner) {
+                    lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                        hasPermission = context.hasLocationPermission()
                     }
                 }
 
-                LaunchedEffect(Unit) {
-                    permissionLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION,
-                        ),
-                    )
+                if (hasPermission) {
+                    // Load when the app comes to the foreground (if stale), then keep fresh
+                    // while the screen is on. Stops when the app is backgrounded.
+                    LaunchedEffect(lifecycleOwner) {
+                        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                            viewModel.refreshIfStale()
+                            while (true) {
+                                delay(AUTO_REFRESH_CHECK_MS)
+                                viewModel.refreshIfStale(retryErrors = false)
+                            }
+                        }
+                    }
+                    BusApp(viewModel)
+                } else {
+                    PermissionScreen(onAllow = { permissionLauncher.launch(LOCATION_PERMISSIONS) })
                 }
-
-                BusApp(viewModel)
             }
         }
     }
 }
+
+private val LOCATION_PERMISSIONS = arrayOf(
+    Manifest.permission.ACCESS_FINE_LOCATION,
+    Manifest.permission.ACCESS_COARSE_LOCATION,
+)
+
+/** While the screen is on, check this often whether the results are old enough to refresh. */
+private const val AUTO_REFRESH_CHECK_MS = 30_000L
+
+/** How often "N min away" labels are recomputed between network refreshes. */
+private const val CLOCK_TICK_MS = 15_000L
+
+private val clockFormatter: DateTimeFormatter =
+    DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
+
+private fun Context.hasLocationPermission(): Boolean =
+    LOCATION_PERMISSIONS.any {
+        ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
 
 @Composable
 fun BusApp(viewModel: BusViewModel) {
     val listState = rememberScalingLazyListState()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+
+    // Recompute "N min away" between network refreshes so labels never go stale.
+    val now by produceState(initialValue = Instant.now()) {
+        while (true) {
+            delay(CLOCK_TICK_MS)
+            value = Instant.now()
+        }
+    }
 
     Scaffold(
         timeText = { TimeText() },
@@ -166,10 +230,21 @@ fun BusApp(viewModel: BusViewModel) {
                                 }
                             }
                         }
+                        if (state.stale) {
+                            item {
+                                Text(
+                                    text = "Couldn't update · showing last results",
+                                    style = MaterialTheme.typography.caption2,
+                                    color = MtaPastelGold,
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                        }
                         items(state.routes) { route ->
                             BusRouteGroup(
                                 route = route,
                                 expandedRouteIds = state.expandedRouteIds,
+                                now = now,
                                 onRouteToggle = { viewModel.toggleRouteExpansion(route.routeShortName) },
                                 onRoutePinToggle = { viewModel.toggleRoutePin(route.routeShortName) }
                             )
@@ -182,7 +257,7 @@ fun BusApp(viewModel: BusViewModel) {
                                 contentAlignment = Alignment.Center,
                             ) {
                                 CompactButton(
-                                    onClick = { viewModel.refresh(isPullToRefresh = true) },
+                                    onClick = { viewModel.refresh() },
                                     enabled = !isRefreshing,
                                     colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
                                 ) {
@@ -201,6 +276,7 @@ fun BusApp(viewModel: BusViewModel) {
 fun BusRouteGroup(
     route: BusRouteUiModel,
     expandedRouteIds: Set<String>,
+    now: Instant,
     onRouteToggle: () -> Unit,
     onRoutePinToggle: () -> Unit,
 ) {
@@ -275,7 +351,7 @@ fun BusRouteGroup(
         if (isRouteExpanded) {
             Column {
                 route.directions.forEach { direction ->
-                    DirectionItem(direction = direction)
+                    DirectionItem(direction = direction, now = now)
                     Spacer(
                         modifier = Modifier
                             .height(1.dp)
@@ -291,6 +367,7 @@ fun BusRouteGroup(
 @Composable
 fun DirectionItem(
     direction: BusDirectionUiModel,
+    now: Instant,
 ) {
     Column(
         modifier = Modifier
@@ -330,8 +407,15 @@ fun DirectionItem(
                 color = MaterialTheme.colors.onSurface.copy(alpha = 0.4f),
             )
         } else {
-            direction.arrivals.forEach { (_, distanceText, arrivalClockTime, minutesAway) ->
-                val isArriving = minutesAway.contains("Arriving", ignoreCase = true) || minutesAway.startsWith("0 ") || minutesAway.startsWith("1 ")
+            direction.arrivals.forEach { arrival ->
+                val minutes = arrival.expected?.let { minutesUntil(it, now) }
+                val minutesText = when {
+                    minutes == null -> ""
+                    minutes <= 0L -> "Arriving"
+                    else -> "$minutes min away"
+                }
+                val clockTime = arrival.expected?.let { clockFormatter.format(it) }.orEmpty()
+                val isArriving = minutes != null && minutes <= 1L
                 val timeColor = if (isArriving) MtaPastelGreen else MtaPastelGold
 
                 Row(
@@ -342,18 +426,52 @@ fun DirectionItem(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        text = "$distanceText ($minutesAway)",
+                        text = if (minutesText.isEmpty()) arrival.distanceText else "${arrival.distanceText} ($minutesText)",
                         style = MaterialTheme.typography.body2,
                         color = timeColor,
                         fontWeight = if (isArriving) FontWeight.Bold else FontWeight.Normal,
                     )
                     Text(
-                        text = arrivalClockTime,
+                        text = clockTime,
                         style = MaterialTheme.typography.caption2,
                         color = MaterialTheme.colors.onSurface.copy(alpha = 0.5f),
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun PermissionScreen(onAllow: () -> Unit) {
+    Scaffold(timeText = { TimeText() }) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = "Location needed",
+                style = MaterialTheme.typography.title3,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Allow location to find bus stops near you. If no prompt appears, enable it in Settings.",
+                style = MaterialTheme.typography.caption2,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Chip(
+                onClick = onAllow,
+                label = { Text("Allow") },
+                colors = ChipDefaults.primaryChipColors(
+                    backgroundColor = MtaPastelBlue,
+                    contentColor = Color.Black,
+                ),
+            )
         }
     }
 }

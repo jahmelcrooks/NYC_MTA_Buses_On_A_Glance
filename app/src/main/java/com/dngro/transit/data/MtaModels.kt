@@ -3,14 +3,19 @@ package com.dngro.transit.data
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonArray
+
+// Every field below has a default on purpose. MTA's JSON is inconsistent between
+// buses and API versions, and one missing field must not throw away a whole response.
 
 // --- Discovery API Models (stops-for-location.json) ---
 
@@ -25,21 +30,25 @@ data class StopResponse(
 @Serializable
 data class StopData(
     @SerialName("stops") val stops: List<MtaStop> = emptyList(),
-)
+    // OneBusAway-style responses put the stops under "list" instead.
+    @SerialName("list") val list: List<MtaStop> = emptyList(),
+) {
+    val allStops: List<MtaStop> get() = stops.ifEmpty { list }
+}
 
 @Serializable
 data class MtaStop(
-    val id: String,
-    val name: String,
-    val lat: Double,
-    val lon: Double,
+    val id: String = "",
+    val name: String = "",
+    val lat: Double = Double.NaN,
+    val lon: Double = Double.NaN,
     val direction: String? = null,
     val routes: List<MtaRouteInfo> = emptyList(),
 )
 
 @Serializable
 data class MtaRouteInfo(
-    val shortName: String,
+    val shortName: String = "",
     val longName: String? = null,
     val description: String? = null,
 )
@@ -48,17 +57,17 @@ data class MtaRouteInfo(
 
 @Serializable
 data class SiriResponse(
-    @SerialName("Siri") val siri: SiriData,
+    @SerialName("Siri") val siri: SiriData? = null,
 )
 
 @Serializable
 data class SiriData(
-    @SerialName("ServiceDelivery") val serviceDelivery: ServiceDelivery,
+    @SerialName("ServiceDelivery") val serviceDelivery: ServiceDelivery? = null,
 )
 
 @Serializable
 data class ServiceDelivery(
-    @SerialName("StopMonitoringDelivery") val stopMonitoringDelivery: List<StopMonitoringDelivery>,
+    @SerialName("StopMonitoringDelivery") val stopMonitoringDelivery: List<StopMonitoringDelivery> = emptyList(),
 )
 
 @Serializable
@@ -68,23 +77,26 @@ data class StopMonitoringDelivery(
 
 @Serializable
 data class MonitoredStopVisit(
-    @SerialName("MonitoredVehicleJourney") val monitoredVehicleJourney: MonitoredVehicleJourney,
+    @SerialName("MonitoredVehicleJourney") val monitoredVehicleJourney: MonitoredVehicleJourney? = null,
 )
 
 /**
- * Custom serializer to handle fields being either a String or an Array.
+ * Custom serializer to handle fields being a String, a one-element Array, or null.
  * The MTA API is inconsistent with these types.
  */
 object StringOrArraySerializer : KSerializer<String> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("StringOrArray", PrimitiveKind.STRING)
 
     override fun deserialize(decoder: Decoder): String {
-        val input = (decoder as? JsonDecoder) ?: throw Exception("Only JSON is supported")
-        val element = input.decodeJsonElement()
-        return try {
-            (element as? JsonPrimitive)?.content ?: element.jsonArray.first().toString().replace("\"", "")
-        } catch (_: Exception) {
-            ""
+        val input = decoder as? JsonDecoder ?: throw SerializationException("Only JSON is supported")
+        return when (val element = input.decodeJsonElement()) {
+            is JsonNull -> ""
+            is JsonPrimitive -> element.content
+            is JsonArray -> (element.firstOrNull() as? JsonPrimitive)
+                ?.takeUnless { it is JsonNull }
+                ?.content
+                .orEmpty()
+            else -> ""
         }
     }
 
@@ -96,12 +108,14 @@ object StringOrArraySerializer : KSerializer<String> {
 @Serializable
 data class MonitoredVehicleJourney(
     @Serializable(with = StringOrArraySerializer::class)
-    @SerialName("PublishedLineName") val lineName: String,
+    @SerialName("PublishedLineName") val lineName: String = "",
 
     @Serializable(with = StringOrArraySerializer::class)
     @SerialName("DestinationName") val destinationName: String = "",
 
-    @SerialName("MonitoredCall") val monitoredCall: MonitoredCall,
+    @SerialName("VehicleRef") val vehicleRef: String? = null,
+
+    @SerialName("MonitoredCall") val monitoredCall: MonitoredCall = MonitoredCall(),
 )
 
 @Serializable

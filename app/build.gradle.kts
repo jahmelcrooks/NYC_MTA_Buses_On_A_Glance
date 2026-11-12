@@ -60,6 +60,7 @@ dependencies {
     implementation(libs.wear.tooling.preview)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.lifecycle.runtime.compose)
     implementation(libs.core.splashscreen)
     implementation(libs.tiles)
     implementation(libs.tiles.material)
@@ -76,6 +77,8 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.retrofit.serialization)
     implementation(libs.kotlinx.serialization.json)
+
+    testImplementation(libs.junit)
 
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.ui.test.junit4)

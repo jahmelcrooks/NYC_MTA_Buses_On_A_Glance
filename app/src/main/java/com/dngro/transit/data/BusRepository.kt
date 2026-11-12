@@ -1,16 +1,32 @@
 package com.dngro.transit.data
 
 import android.util.Log
+import com.dngro.transit.BuildConfig
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.HttpException
 import retrofit2.Retrofit
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+
+/** Why a request failed, so the UI can say something more useful than "no buses". */
+enum class BusError {
+    NO_API_KEY,
+    BAD_API_KEY,
+    NETWORK,
+    SERVER,
+}
+
+class BusApiException(
+    val error: BusError,
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)
 
 class BusRepository(private val apiKey: String) {
 
@@ -20,11 +36,14 @@ class BusRepository(private val apiKey: String) {
     }
 
     private val apiService: MtaApiService by lazy {
-        val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        }
         val client = OkHttpClient.Builder()
-            .addInterceptor(logging)
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .apply {
+                // Request URLs contain the API key and the user's coordinates, so only
+                // log in debug builds, and redact the key even there.
+                if (BuildConfig.DEBUG) addInterceptor(redactedLogging())
+            }
             .build()
 
         Retrofit.Builder()
@@ -36,14 +55,13 @@ class BusRepository(private val apiKey: String) {
     }
 
     /**
-     * Fetches nearby stops and returns them as a Flow.
-     * Handles exceptions and returns an empty list on failure.
+     * Stops within roughly half a mile of the given location.
+     * @throws BusApiException on any failure.
      */
-    fun getNearbyStops(lat: Double, lon: Double): Flow<List<MtaStop>> = flow {
-        Log.d("BusRepository", "Fetching stops for lat: $lat, lon: $lon...")
-        try {
-            // Fetch stops within ~0.5 miles (805 meters) radius around current GPS location
-            val response = apiService.getStopsForLocation(
+    suspend fun getNearbyStops(lat: Double, lon: Double): List<MtaStop> {
+        requireKey()
+        val response = call {
+            apiService.getStopsForLocation(
                 lat = lat,
                 lon = lon,
                 latSpan = 0.0075,
@@ -51,37 +69,70 @@ class BusRepository(private val apiKey: String) {
                 radius = 805,
                 apiKey = apiKey,
             )
-            if (response.code != 200) {
-                Log.e("BusRepository", "MTA API Error: ${response.code} - ${response.text}")
-                emit(emptyList())
-            } else {
-                val stops = response.data?.stops ?: emptyList()
-                Log.d("BusRepository", "Found ${stops.size} stops")
-                emit(stops)
-            }
-        } catch (e: Exception) {
-            Log.e("BusRepository", "Error fetching stops: ${e.message}", e)
-            emit(emptyList())
         }
-    }.flowOn(Dispatchers.IO)
+        checkEnvelope(response.code, response.text)
+        return response.data?.allStops.orEmpty()
+            .filter { it.id.isNotBlank() && !it.lat.isNaN() && !it.lon.isNaN() }
+    }
 
     /**
-     * Fetches real-time bus arrivals for a specific stop ID.
-     * Flattens the deep SIRI response into a simple list of journeys.
+     * Real-time arrivals for one stop, flattened out of the SIRI envelope.
+     * @throws BusApiException on any failure.
      */
-    fun getBusArrivals(stopId: String): Flow<List<MonitoredVehicleJourney>> = flow {
-        try {
-            val response = apiService.getStopMonitoring(
+    suspend fun getBusArrivals(stopId: String): List<MonitoredVehicleJourney> {
+        requireKey()
+        val response = call {
+            apiService.getStopMonitoring(
                 stopId = stopId,
                 apiKey = apiKey,
             )
-            val arrivals = response.siri.serviceDelivery.stopMonitoringDelivery
-                .flatMap { it.monitoredStopVisit }
-                .map { it.monitoredVehicleJourney }
-            emit(arrivals)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            emit(emptyList())
         }
-    }.flowOn(Dispatchers.IO)
+        return response.siri?.serviceDelivery?.stopMonitoringDelivery.orEmpty()
+            .flatMap { it.monitoredStopVisit }
+            .mapNotNull { it.monitoredVehicleJourney }
+    }
+
+    private fun requireKey() {
+        if (apiKey.isBlank()) {
+            throw BusApiException(BusError.NO_API_KEY, "No MTA API key configured")
+        }
+    }
+
+    private fun checkEnvelope(code: Int, text: String?) {
+        when (code) {
+            in 200..299 -> Unit
+            401, 403 -> throw BusApiException(BusError.BAD_API_KEY, "MTA rejected the API key ($code)")
+            else -> throw BusApiException(BusError.SERVER, "MTA API error $code: $text")
+        }
+    }
+
+    private suspend fun <T> call(block: suspend () -> T): T =
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: HttpException) {
+            val error = if (e.code() == 401 || e.code() == 403) BusError.BAD_API_KEY else BusError.SERVER
+            throw BusApiException(error, "HTTP ${e.code()}", e)
+        } catch (e: IOException) {
+            throw BusApiException(BusError.NETWORK, e.message ?: "Network error", e)
+        } catch (e: SerializationException) {
+            throw BusApiException(BusError.SERVER, "Unreadable MTA response", e)
+        }
+
+    private fun redactedLogging(): HttpLoggingInterceptor {
+        val logger = object : HttpLoggingInterceptor.Logger {
+            override fun log(message: String) {
+                Log.d(TAG, KEY_PARAM.replace(message, "\$1REDACTED"))
+            }
+        }
+        return HttpLoggingInterceptor(logger).apply {
+            level = HttpLoggingInterceptor.Level.BASIC
+        }
+    }
+
+    private companion object {
+        const val TAG = "BusRepository"
+        val KEY_PARAM = Regex("([?&]key=)[^&\\s]+")
+    }
 }

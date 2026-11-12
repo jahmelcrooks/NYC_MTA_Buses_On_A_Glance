@@ -16,6 +16,7 @@ import androidx.wear.protolayout.material.Typography
 import androidx.wear.protolayout.material.layouts.PrimaryLayout
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
+import com.dngro.transit.presentation.MainActivity
 import com.google.android.horologist.annotations.ExperimentalHorologistApi
 import com.google.android.horologist.tiles.SuspendingTileService
 
@@ -86,7 +87,7 @@ private fun tileLayout(
         )
         content.addContent(Spacer.Builder().setHeight(dp(4f)).build())
 
-        pinnedRoutes.take(4).forEach { route ->
+        pinnedRoutes.sorted().take(4).forEach { route ->
             content.addContent(
                 Text.Builder(context, "★ $route")
                     .setTypography(Typography.TYPOGRAPHY_TITLE3)
@@ -100,7 +101,16 @@ private fun tileLayout(
     val modifiers = ModifiersBuilders.Modifiers.Builder()
         .setClickable(
             ModifiersBuilders.Clickable.Builder()
-                .setOnClick(ActionBuilders.LaunchAction.Builder().build())
+                .setOnClick(
+                    ActionBuilders.LaunchAction.Builder()
+                        .setAndroidActivity(
+                            ActionBuilders.AndroidActivity.Builder()
+                                .setPackageName(context.packageName)
+                                .setClassName(MainActivity::class.java.name)
+                                .build(),
+                        )
+                        .build(),
+                )
                 .setId("tile_click")
                 .build(),
         )

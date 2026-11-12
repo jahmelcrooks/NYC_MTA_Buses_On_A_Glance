@@ -4,63 +4,34 @@ import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
 import android.location.Location
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.dngro.transit.BuildConfig
+import com.dngro.transit.data.BusApiException
+import com.dngro.transit.data.BusError
 import com.dngro.transit.data.BusRepository
+import com.dngro.transit.data.MtaStop
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
+import com.google.android.gms.tasks.Task
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
-import java.util.Locale
-
-sealed class UiState {
-    object Loading : UiState()
-    data class Success(
-        val routes: List<BusRouteUiModel>,
-        val expandedRouteIds: Set<String> = emptySet(),
-        val expandedDirectionIds: Set<String> = emptySet(),
-        val pinnedRouteIds: Set<String> = emptySet(),
-    ) : UiState()
-    data class Error(val message: String) : UiState()
-}
-
-data class BusRouteUiModel(
-    val routeShortName: String,
-    val routeLongName: String,
-    val nearestStopDistanceMeters: Float = Float.MAX_VALUE,
-    val isPinned: Boolean = false,
-    val directions: List<BusDirectionUiModel>,
-)
-
-data class BusDirectionUiModel(
-    val id: String, // route_destination
-    val destinationName: String,
-    val stopName: String,
-    val stopDistanceText: String = "",
-    val arrivals: List<BusArrivalDetail>,
-)
-
-data class BusArrivalDetail(
-    val id: String,
-    val distanceText: String,
-    val arrivalClockTime: String,
-    val minutesAway: String,
-)
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class BusViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = BusRepository(BuildConfig.MTA_API_KEY)
@@ -77,227 +48,178 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
-    private val maxRoutesToDisplay = 15
-    private val maxHalfMileMeters = 804.67f // 0.5 miles
-    private val timeFormatter = DateTimeFormatter.ofPattern("H:mm:ss")
+    /** Only one refresh runs at a time; starting a new one cancels the old one. */
+    private var refreshJob: Job? = null
+    private var lastLoadedAtMillis = 0L
 
-    init {
-        refresh()
+    // No refresh in init: the UI starts one once location permission is known to be granted.
+
+    /**
+     * Locate the user, find nearby stops and load arrivals. Existing results stay on screen
+     * while this runs; the full-screen spinner only shows when there is nothing to show yet.
+     */
+    fun refresh() {
+        refreshJob?.cancel()
+        if (_uiState.value is UiState.Success) {
+            _isRefreshing.value = true
+        } else {
+            _uiState.value = UiState.Loading
+        }
+
+        refreshJob = viewModelScope.launch {
+            try {
+                val location = currentLocation() ?: throw LocationUnavailableException()
+
+                val nearby = repository.getNearbyStops(location.latitude, location.longitude)
+                    .map { stop ->
+                        stop to distanceMeters(location.latitude, location.longitude, stop.lat, stop.lon)
+                    }
+                    .filter { (_, meters) -> meters <= MAX_RADIUS_METERS }
+                    .sortedBy { (_, meters) -> meters }
+
+                if (nearby.isEmpty()) {
+                    showError("No bus stops within 0.5 mi")
+                    return@launch
+                }
+
+                val stopArrivals = fetchArrivals(nearby.take(MAX_STOPS_TO_QUERY))
+                val routeLongNames = nearby
+                    .flatMap { it.first.routes }
+                    .filter { it.shortName.isNotBlank() }
+                    .associate { it.shortName to it.longName.orEmpty() }
+
+                val routes = buildRoutes(
+                    stopArrivals = stopArrivals,
+                    routeLongNames = routeLongNames,
+                    pinnedRoutes = _pinnedRouteIds.value,
+                    maxRoutes = MAX_ROUTES_TO_DISPLAY,
+                )
+                if (routes.isEmpty()) {
+                    showError("No upcoming buses nearby (< 0.5 mi)")
+                    return@launch
+                }
+                showRoutes(routes)
+            } catch (e: BusApiException) {
+                Log.w(TAG, "Refresh failed (${e.error}): ${e.message}")
+                showFailure(e.error.userMessage())
+            } catch (e: LocationUnavailableException) {
+                showFailure("Couldn't get your location. Is location on?")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Safety net: an unexpected bug should show an error, not crash the app.
+                Log.e(TAG, "Unexpected refresh failure", e)
+                showFailure("Something went wrong. Try again.")
+            }
+        }
     }
 
-    private fun calculateDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+    /**
+     * Refresh only if what's on screen is old or missing. Safe to call as often as you like.
+     * [retryErrors] = false skips automatic retries of an error screen (e.g. a missing API key).
+     */
+    fun refreshIfStale(retryErrors: Boolean = true) {
+        if (refreshJob?.isActive == true) return
+        when (_uiState.value) {
+            is UiState.Success -> {
+                if (SystemClock.elapsedRealtime() - lastLoadedAtMillis >= STALE_AFTER_MS) refresh()
+            }
+            is UiState.Error -> if (retryErrors) refresh()
+            UiState.Loading -> refresh()
+        }
+    }
+
+    private suspend fun fetchArrivals(stops: List<Pair<MtaStop, Float>>): List<StopArrivals> {
+        val results = coroutineScope {
+            stops.map { (stop, meters) ->
+                async {
+                    try {
+                        Result.success(StopArrivals(stop, meters, repository.getBusArrivals(stop.id)))
+                    } catch (e: BusApiException) {
+                        Result.failure<StopArrivals>(e)
+                    }
+                }
+            }.awaitAll()
+        }
+        val succeeded = results.mapNotNull { it.getOrNull() }
+        if (succeeded.isEmpty()) {
+            // Every stop failed, so surface the real reason instead of "no buses".
+            throw results.firstNotNullOfOrNull { it.exceptionOrNull() }
+                ?: BusApiException(BusError.SERVER, "No data returned")
+        }
+        return succeeded
+    }
+
+    private fun showRoutes(routes: List<BusRouteUiModel>) {
+        lastLoadedAtMillis = SystemClock.elapsedRealtime()
+        val pinned = _pinnedRouteIds.value
+        _uiState.update { current ->
+            val previous = current as? UiState.Success
+            UiState.Success(
+                routes = routes,
+                expandedRouteIds = previous?.expandedRouteIds.orEmpty(),
+                expandedDirectionIds = previous?.expandedDirectionIds.orEmpty(),
+                pinnedRouteIds = pinned,
+            )
+        }
+        _isRefreshing.value = false
+    }
+
+    /** A real, authoritative answer such as "no stops here". Replaces whatever is showing. */
+    private fun showError(message: String) {
+        _uiState.value = UiState.Error(message)
+        _isRefreshing.value = false
+    }
+
+    /** A failed refresh. Keeps the last good results on screen (marked stale) if there are any. */
+    private fun showFailure(message: String) {
+        _uiState.update { current ->
+            if (current is UiState.Success) current.copy(stale = true) else UiState.Error(message)
+        }
+        _isRefreshing.value = false
+    }
+
+    /**
+     * Uses a recent cached fix immediately; otherwise asks for a fresh one and gives up
+     * after [LOCATION_TIMEOUT_MS], falling back to any cached fix. Returns null if neither works.
+     * Callers must already hold a location permission.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun currentLocation(): Location? {
+        val cached = try {
+            fusedLocationClient.lastLocation.awaitTask()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+        if (cached != null && ageNanos(cached) < FRESH_FIX_NANOS) return cached
+
+        val cancellation = CancellationTokenSource()
+        return try {
+            withTimeoutOrNull(LOCATION_TIMEOUT_MS) {
+                try {
+                    fusedLocationClient
+                        .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
+                        .awaitTask()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+            } ?: cached
+        } finally {
+            cancellation.cancel()
+        }
+    }
+
+    private fun ageNanos(location: Location): Long =
+        SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
+
+    private fun distanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
         val results = FloatArray(1)
         Location.distanceBetween(lat1, lon1, lat2, lon2, results)
         return results[0]
-    }
-
-    private fun formatDistanceToUser(meters: Float): String {
-        val miles = meters * 0.000621371f
-        return if (miles < 0.1f) {
-            val feet = (meters * 3.28084f).toInt()
-            "$feet ft away"
-        } else {
-            String.format(Locale.US, "%.1f mi away", miles)
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    fun refresh(isPullToRefresh: Boolean = false) {
-        if (!isPullToRefresh) {
-            _uiState.value = UiState.Loading
-        } else {
-            _isRefreshing.value = true
-        }
-        viewModelScope.launch {
-            try {
-                fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                    .addOnSuccessListener { location ->
-                        if (location != null) {
-                            Log.d("BusViewModel", "High accuracy location: ${location.latitude}, ${location.longitude}")
-                            loadNearbyBusArrivals(location.latitude, location.longitude, isPullToRefresh)
-                        } else {
-                            fusedLocationClient.lastLocation.addOnSuccessListener { lastLoc ->
-                                if (lastLoc != null) {
-                                    Log.d("BusViewModel", "Fallback lastLocation: ${lastLoc.latitude}, ${lastLoc.longitude}")
-                                    loadNearbyBusArrivals(lastLoc.latitude, lastLoc.longitude, isPullToRefresh)
-                                } else {
-                                    Log.e("BusViewModel", "Location null")
-                                    if (!isPullToRefresh) {
-                                        _uiState.value = UiState.Error("Could not determine watch location")
-                                    }
-                                    _isRefreshing.value = false
-                                }
-                            }.addOnFailureListener {
-                                if (!isPullToRefresh) {
-                                    _uiState.value = UiState.Error("Location error")
-                                }
-                                _isRefreshing.value = false
-                            }
-                        }
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("BusViewModel", "Location failure: ${e.message}")
-                        fusedLocationClient.lastLocation.addOnSuccessListener { lastLoc ->
-                            if (lastLoc != null) {
-                                loadNearbyBusArrivals(lastLoc.latitude, lastLoc.longitude, isPullToRefresh)
-                            } else {
-                                if (!isPullToRefresh) {
-                                    _uiState.value = UiState.Error("Location error")
-                                }
-                                _isRefreshing.value = false
-                            }
-                        }.addOnFailureListener {
-                            if (!isPullToRefresh) {
-                                _uiState.value = UiState.Error("Location error")
-                            }
-                            _isRefreshing.value = false
-                        }
-                    }
-            } catch (_: Exception) {
-                Log.e("BusViewModel", "Refresh crash")
-                _isRefreshing.value = false
-            }
-        }
-    }
-
-    private fun loadNearbyBusArrivals(lat: Double, lon: Double, isPullToRefresh: Boolean = false) {
-        viewModelScope.launch {
-            try {
-                repository.getNearbyStops(lat, lon).collect { stops ->
-                    Log.d("BusViewModel", "Raw stops fetched: ${stops.size}")
-
-                    val stopsWithDistance = stops.map { stop ->
-                        stop to calculateDistanceMeters(lat, lon, stop.lat, stop.lon)
-                    }.filter { (_, dist) ->
-                        dist <= maxHalfMileMeters
-                    }.sortedBy { (_, dist) ->
-                        dist
-                    }
-
-                    if (stopsWithDistance.isEmpty()) {
-                        Log.w("BusViewModel", "No stops found within 0.5 miles")
-                        if (!isPullToRefresh) _uiState.value = UiState.Error("No bus stops within 0.5 mi")
-                        _isRefreshing.value = false
-                        return@collect
-                    }
-
-                    val routeMetadata = stopsWithDistance.flatMap { it.first.routes }
-                        .associate { it.shortName to (it.longName ?: "") }
-
-                    val stopsToFetch = stopsWithDistance.take(20)
-                    val allArrivalsFlat = coroutineScope {
-                        stopsToFetch.map { (stop, dist) ->
-                            async {
-                                try {
-                                    repository.getBusArrivals(stop.id).first().map { journey ->
-                                        Quadruple(stop, dist, journey, routeMetadata[journey.lineName] ?: "")
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e("BusViewModel", "Stop ${stop.id} failed: ${e.message}")
-                                    emptyList()
-                                }
-                            }
-                        }.awaitAll().flatten()
-                    }
-
-                    val groupedByRoute = allArrivalsFlat.groupBy { it.third.lineName }
-                    val currentPinned = _pinnedRouteIds.value
-
-                    val routesList = groupedByRoute.map { (routeShortName, quadList) ->
-                        val rawRouteLongName = quadList.firstOrNull { it.fourth.isNotEmpty() }?.fourth ?: ""
-                        val simplifiedRouteName = if (rawRouteLongName.contains(" - ")) {
-                            rawRouteLongName.substringBefore(" - ")
-                        } else {
-                            rawRouteLongName
-                        }
-
-                        val minDistanceForRoute = quadList.minOfOrNull { it.second } ?: Float.MAX_VALUE
-
-                        val directions = quadList.groupBy { it.third.destinationName.ifEmpty { "Unknown" } }
-                            .map { (destName, items) ->
-                                val topStopItem = items.first()
-                                val stopName = topStopItem.first.name
-                                val stopDistMeters = topStopItem.second
-                                val stopDistText = formatDistanceToUser(stopDistMeters)
-
-                                val arrivals = items
-                                    .distinctBy { it.third.monitoredCall.expectedArrivalTime }
-                                    .sortedBy { it.third.monitoredCall.expectedArrivalTime }
-                                    .take(5)
-                                    .map { (_, _, journey, _) ->
-                                        val rawTime = journey.monitoredCall.expectedArrivalTime
-                                        var formattedTime = ""
-                                        var minAway = ""
-
-                                        if (rawTime != null) {
-                                            try {
-                                                val arrivalDT = OffsetDateTime.parse(rawTime)
-                                                val localArrival = arrivalDT.atZoneSameInstant(ZoneId.systemDefault())
-                                                formattedTime = localArrival.format(timeFormatter)
-
-                                                val diffMinutes = ChronoUnit.MINUTES.between(Instant.now(), arrivalDT.toInstant())
-                                                minAway = if (diffMinutes <= 0) "Arriving" else "$diffMinutes min away"
-                                            } catch (e: Exception) {
-                                                formattedTime = rawTime.substringAfter("T").substringBefore("-")
-                                            }
-                                        }
-
-                                        val distance = journey.monitoredCall.extensions?.distances?.presentableDistance
-                                        val displayDistance = if (distance.isNullOrEmpty() || distance.contains("approaching", ignoreCase = true)) {
-                                            "ETA"
-                                        } else {
-                                            distance
-                                        }
-
-                                        BusArrivalDetail(
-                                            id = "${journey.lineName}_${journey.monitoredCall.expectedArrivalTime}",
-                                            distanceText = displayDistance,
-                                            arrivalClockTime = formattedTime,
-                                            minutesAway = minAway,
-                                        )
-                                    }
-
-                                BusDirectionUiModel(
-                                    id = "${routeShortName}_$destName",
-                                    destinationName = destName,
-                                    stopName = stopName,
-                                    stopDistanceText = stopDistText,
-                                    arrivals = arrivals,
-                                )
-                            }
-
-                        BusRouteUiModel(
-                            routeShortName = routeShortName,
-                            routeLongName = simplifiedRouteName,
-                            nearestStopDistanceMeters = minDistanceForRoute,
-                            isPinned = currentPinned.contains(routeShortName),
-                            directions = directions,
-                        )
-                    }.sortedWith(
-                        compareByDescending<BusRouteUiModel> { it.isPinned }
-                            .thenBy { it.nearestStopDistanceMeters },
-                    ).take(maxRoutesToDisplay)
-
-                    _uiState.update { currentState ->
-                        if (routesList.isEmpty() && !isPullToRefresh) {
-                            UiState.Error("No upcoming buses nearby (< 0.5 mi)")
-                        } else {
-                            if (currentState is UiState.Success) {
-                                currentState.copy(routes = routesList, pinnedRouteIds = currentPinned)
-                            } else if (routesList.isNotEmpty()) {
-                                UiState.Success(routes = routesList, pinnedRouteIds = currentPinned)
-                            } else {
-                                UiState.Error("No upcoming buses nearby (< 0.5 mi)")
-                            }
-                        }
-                    }
-                    _isRefreshing.value = false
-                }
-            } catch (e: Exception) {
-                Log.e("BusViewModel", "Mapping error: ${e.message}")
-                _isRefreshing.value = false
-            }
-        }
     }
 
     fun toggleRouteExpansion(routeId: String) {
@@ -331,7 +253,7 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
             androidx.wear.tiles.TileService.getUpdater(getApplication())
                 .requestUpdate(com.dngro.transit.tile.MainTileService::class.java)
         } catch (e: Exception) {
-            Log.d("BusViewModel", "Tile update info: ${e.message}")
+            Log.d(TAG, "Tile update info: ${e.message}")
         }
 
         _uiState.update { state ->
@@ -352,11 +274,33 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    private companion object {
+        const val TAG = "BusViewModel"
+        const val MAX_ROUTES_TO_DISPLAY = 15
+        const val MAX_RADIUS_METERS = 804.67f // 0.5 miles
+
+        /** Arrivals are fetched per stop, so this caps the requests made per refresh. */
+        const val MAX_STOPS_TO_QUERY = 8
+        const val STALE_AFTER_MS = 60_000L
+        const val LOCATION_TIMEOUT_MS = 15_000L
+        const val FRESH_FIX_NANOS = 60_000_000_000L // 60 s
+    }
 }
 
-private data class Quadruple<A, B, C, D>(
-    val first: A,
-    val second: B,
-    val third: C,
-    val fourth: D,
-)
+private class LocationUnavailableException : Exception()
+
+private fun BusError.userMessage(): String = when (this) {
+    BusError.NO_API_KEY -> "MTA API key missing. See the README."
+    BusError.BAD_API_KEY -> "MTA rejected the API key."
+    BusError.NETWORK -> "No connection. Check Wi-Fi or LTE."
+    BusError.SERVER -> "MTA data unavailable. Try again."
+}
+
+private suspend fun <T> Task<T>.awaitTask(): T? = suspendCancellableCoroutine { continuation ->
+    addOnSuccessListener { result -> continuation.resume(result) }
+    addOnFailureListener { error -> continuation.resumeWithException(error) }
+    // A cancelled task means "no fix", not "cancel the caller": returning null lets the
+    // refresh finish with an error instead of silently dying with a spinner still showing.
+    addOnCanceledListener { continuation.resume(null) }
+}
