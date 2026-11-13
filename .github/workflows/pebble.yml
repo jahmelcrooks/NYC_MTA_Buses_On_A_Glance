@@ -36,3 +36,22 @@ jobs:
           name: nyc-buses-pebble
           path: pebble/build/*.pbw
           if-no-files-found: error
+
+      # Smoke test: launch in the emulator and screenshot it. Without an API key the app should
+      # show its "add your MTA API key" screen. Informational only, so it never fails the build.
+      - name: Emulator screenshots
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y xvfb
+          mkdir -p shots
+          for platform in basalt chalk emery; do
+            xvfb-run -a sh -c "pebble install --emulator $platform build/pebble.pbw && sleep 20 && pebble screenshot --emulator $platform --no-open shots/$platform.png" || true
+            pebble kill || true
+          done
+          ls -la shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emulator-screenshots
+          path: pebble/shots/*.png
+          if-no-files-found: ignore
