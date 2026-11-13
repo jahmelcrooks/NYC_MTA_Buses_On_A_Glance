@@ -32,12 +32,20 @@ keyPassword=...
 Then run `./gradlew bundleRelease assembleRelease`.
 
 ## Play Console checklist (Wear OS)
-- **App ID** is `com.dngro.nycbuses`. It's permanent after the first upload.
+- **App ID** is `com.dngro.nycbuses`. It's permanent after the first upload. Test installs of
+  the old `com.dngro.transit` build are a separate app: uninstall them (stars don't carry over).
+- **Merge to master first:** the privacy policy link below only works once `PRIVACY.md` is on
+  master and the repo is public.
+- **Build release once locally** (`./gradlew assembleRelease`) before tagging: release builds
+  run lint checks that debug builds in Android Studio skip.
+- **API key:** it's compiled into the app, and draft GitHub releases attach the APK, so anyone
+  with the APK can extract the key. Keep drafts private or delete the APK if that matters.
 - **Privacy policy URL** is required because the app uses location. Use
   `https://github.com/jahmelcrooks/NYC_MTA_Buses_On_A_Glance/blob/master/PRIVACY.md`.
-- **Data safety:** precise and approximate location are used for app functionality and sent
-  to the MTA API; nothing is collected by the developer, shared for ads, or stored off-device.
-  Data is encrypted in transit (HTTPS). Answer the form from `PRIVACY.md`.
+- **Data safety:** Play counts data sent off the device as "collected", even though only the
+  MTA receives it. Declare **Location (approximate and precise): collected, processed
+  ephemerally, required, for App functionality, not shared.** Encrypted in transit: yes.
+  Don't answer "no data collected".
 - **Wear OS:** add a Wear OS form factor, upload at least one round Wear screenshot
   (384×384 or larger), and opt in to Wear OS distribution. The app is standalone.
 - **Content rating** questionnaire, **target audience** (not for children), **ads:** none.
