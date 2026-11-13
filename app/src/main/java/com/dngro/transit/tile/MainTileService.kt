@@ -56,15 +56,15 @@ class MainTileService : SuspendingTileService() {
         val context = applicationContext
         val favorites = AppPrefs.loadFavorites(context)
         val hasKey = AppPrefs.apiKey(context).isNotBlank()
-        val now = Instant.now()
-
         val etas: List<FavoriteEta> = if (favorites.isEmpty() || !hasKey) {
             emptyList()
         } else {
             withTimeoutOrNull(FETCH_TIMEOUT_MS) {
-                loadFavoriteEtas(BusRepositories.forContext(context), favorites, now, MAX_TILE_FAVORITES)
+                loadFavoriteEtas(BusRepositories.forContext(context), favorites, Instant.now(), MAX_TILE_FAVORITES)
             } ?: favorites.take(MAX_TILE_FAVORITES).map { FavoriteEta(it, null) }
         }
+        // Taken after the fetch (which can take seconds) so the minutes shown are current.
+        val now = Instant.now()
 
         return TileBuilders.Tile.Builder()
             .setResourcesVersion(RESOURCES_VERSION)

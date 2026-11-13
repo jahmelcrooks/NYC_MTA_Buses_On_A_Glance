@@ -6,32 +6,61 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.dngro.transit"
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.dngro.transit"
+        // The Play Store ID. Permanent once uploaded, so never change it after release.
+        // (The Kotlin package stays com.dngro.transit; the two don't have to match.)
+        applicationId = "com.dngro.nycbuses"
         minSdk = 30
         targetSdk = 36
         versionCode = 110
         versionName = "1.10"
 
-        val localProperties = Properties()
-        val localPropertiesFile = rootProject.file("local.properties")
-        if (localPropertiesFile.exists()) {
-            localProperties.load(localPropertiesFile.inputStream())
-        }
-
+        // From local.properties (mta.api.key=...) or, on CI, the MTA_API_KEY environment variable.
         // Escaped so a stray quote or backslash in the key can't break the generated BuildConfig.
-        val mtaKey = (localProperties.getProperty("mta.api.key") ?: "").trim()
+        val mtaKey = (localProperties.getProperty("mta.api.key") ?: System.getenv("MTA_API_KEY") ?: "").trim()
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
         buildConfigField("String", "MTA_API_KEY", "\"$mtaKey\"")
     }
 
+    // Release signing, only when the keystore details are provided: from keystore.properties
+    // (never committed) or, on CI, environment variables. Without them, release builds are
+    // unsigned and can't be installed or uploaded.
+    val keystoreProperties = Properties()
+    val keystorePropertiesFile = rootProject.file("keystore.properties")
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+    }
+    fun signingValue(property: String, env: String): String? =
+        keystoreProperties.getProperty(property)?.takeIf { it.isNotBlank() }
+            ?: System.getenv(env)?.takeIf { it.isNotBlank() }
+
+    val releaseStoreFile = signingValue("storeFile", "RELEASE_STORE_FILE")
+    val releaseSigning = if (releaseStoreFile != null) {
+        signingConfigs.create("release") {
+            storeFile = rootProject.file(releaseStoreFile)
+            storePassword = signingValue("storePassword", "RELEASE_STORE_PASSWORD")
+            keyAlias = signingValue("keyAlias", "RELEASE_KEY_ALIAS")
+            keyPassword = signingValue("keyPassword", "RELEASE_KEY_PASSWORD")
+        }
+    } else {
+        null
+    }
+
     buildTypes {
         release {
+            signingConfig = releaseSigning
+            // Kept off for now: the app was tested without shrinking, and R8 needs keep rules for
+            // kotlinx.serialization and Retrofit before it can be turned on safely.
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

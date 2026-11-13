@@ -245,7 +245,6 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
             UiState.Success(
                 routes = displayRoutes,
                 expandedRouteIds = previous?.expandedRouteIds.orEmpty(),
-                expandedDirectionIds = previous?.expandedDirectionIds.orEmpty(),
                 favoriteKeys = keys,
             )
         }

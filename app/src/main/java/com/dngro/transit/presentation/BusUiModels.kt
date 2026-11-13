@@ -15,7 +15,6 @@ sealed class UiState {
     data class Success(
         val routes: List<BusRouteUiModel>,
         val expandedRouteIds: Set<String> = emptySet(),
-        val expandedDirectionIds: Set<String> = emptySet(),
         /** Keys (see favoriteKey) of the starred route/direction/stop combinations. */
         val favoriteKeys: Set<String> = emptySet(),
         /** True when the latest refresh failed and [routes] are the previous results. */

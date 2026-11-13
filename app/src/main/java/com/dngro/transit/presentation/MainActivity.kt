@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -176,7 +177,7 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Lets a key be pushed over adb instead of typed on the watch:
-     * `adb shell am start -n com.dngro.transit/.presentation.MainActivity --es mta_api_key YOUR_KEY`
+     * `adb shell am start -n com.dngro.nycbuses/com.dngro.transit.presentation.MainActivity --es mta_api_key YOUR_KEY`
      * Any app on the watch could send this, but the worst it can do is swap the key the app uses.
      */
     private fun applyApiKeyFromIntent(intent: Intent?) {
@@ -431,7 +432,7 @@ private fun AmbientScreen(state: UiState, now: Instant) {
                                 Text(
                                     text = direction.destinationName,
                                     color = Color.LightGray,
-                                    fontSize = 11.sp,
+                                    fontSize = 12.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f),
@@ -451,7 +452,7 @@ private fun AmbientScreen(state: UiState, now: Instant) {
                         }
                 } else {
                     Text(text = "NYC Buses", color = Color.White, fontSize = 14.sp)
-                    Text(text = "Raise your wrist to refresh", color = Color.LightGray, fontSize = 11.sp)
+                    Text(text = "Raise your wrist to refresh", color = Color.LightGray, fontSize = 12.sp)
                 }
             }
         }
@@ -565,11 +566,13 @@ fun DirectionItem(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             // Star this route + direction + stop: it then shows live on the tile and watch face.
+            // 48dp touch target (Wear OS quality guideline), drawn as a 20dp star.
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onFavoriteToggle() }
-                    .padding(end = 6.dp, top = 2.dp, bottom = 2.dp),
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable { onFavoriteToggle() },
+                contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = if (direction.isPinned) Icons.Default.Star else Icons.Outlined.StarBorder,

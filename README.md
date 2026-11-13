@@ -51,7 +51,7 @@ mta.api.key=YOUR_MTA_BUS_TIME_API_KEY
 **B. On the watch, no rebuild.** If the app has no key it shows an **Enter API key** button (you type it with the watch keyboard). Or push it over adb, which is much easier than typing:
 
 ```bash
-adb shell am start -n com.dngro.transit/.presentation.MainActivity --es mta_api_key YOUR_KEY
+adb shell am start -n com.dngro.nycbuses/com.dngro.transit.presentation.MainActivity --es mta_api_key YOUR_KEY
 ```
 
 A key entered on the watch overrides the built-in one. It is stored in the app's private storage and excluded from backups.
@@ -62,6 +62,10 @@ A key entered on the watch overrides the built-in one. It is stored in the app's
 Open the project in **Android Studio**, select your Wear OS device or emulator, and click **Run ▶**.
 
 ---
+
+## 🚀 Releasing
+
+Signed Play Store bundles and APKs are built by GitHub Actions. See [RELEASING.md](RELEASING.md) for setup and the Play Console checklist, and [PRIVACY.md](PRIVACY.md) for the privacy policy.
 
 ## ⚖️ Disclaimer
 
