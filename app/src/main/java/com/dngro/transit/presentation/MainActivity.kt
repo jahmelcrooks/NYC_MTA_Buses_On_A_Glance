@@ -659,7 +659,7 @@ fun DirectionItem(
             .fillMaxWidth()
             .padding(vertical = 6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             // Star this route + direction + stop: it then shows live on the tile and watch face.
             // 48dp touch target (Wear OS quality guideline), drawn as a 20dp star.
             Box(
@@ -680,15 +680,8 @@ fun DirectionItem(
                     modifier = Modifier.size(20.dp),
                 )
             }
-            Text(
-                text = "to ${direction.destinationName}",
-                style = MaterialTheme.typography.caption1,
-                fontWeight = FontWeight.Bold,
-                color = MtaPastelGold,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // Pushes distance and bell to the right; the destination gets its own line below.
+            Spacer(modifier = Modifier.weight(1f))
             if (distanceText.isNotEmpty()) {
                 Text(
                     text = distanceText,
@@ -696,12 +689,13 @@ fun DirectionItem(
                     color = MaterialTheme.colors.onSurface.copy(alpha = 0.7f),
                 )
             }
-            // Bell: buzz shortly before the next bus arrives.
+            // Bell: buzz shortly before the next bus arrives. 48dp touch target, like the star.
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { onAlertToggle() }
-                    .padding(start = 6.dp, top = 2.dp, bottom = 2.dp),
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .clickable { onAlertToggle() },
+                contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = if (alertActive) Icons.Default.Notifications else Icons.Outlined.NotificationsNone,
@@ -711,6 +705,17 @@ fun DirectionItem(
                 )
             }
         }
+
+        // Full width and up to two lines, so long names like "KINGS PLAZA" aren't cut off.
+        Text(
+            text = "to ${direction.destinationName}",
+            style = MaterialTheme.typography.caption1,
+            fontWeight = FontWeight.Bold,
+            color = MtaPastelGold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+        )
 
         val walk = walkLabel(direction.stopDistanceMeters)
         Text(
