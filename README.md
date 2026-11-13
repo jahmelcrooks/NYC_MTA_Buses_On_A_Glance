@@ -7,7 +7,7 @@ A 100% standalone **Wear OS** Android application designed for quick, seamless a
 ## 🌟 Key Features
 
 * **⌚ Standalone watch app:** Runs on the watch itself with no companion phone (`standalone="true"`). The watch needs its own Wi-Fi or LTE for live data.
-* **📍 On-watch location:** Looks close first (0.25 mi) and widens to 0.5 mi, then 1 mi, only if fewer than 3 stops are found. Dense Manhattan blocks get a short, relevant list; sparse areas still get results. It asks for a low-power fix first and only turns on high-accuracy GPS if that doesn't answer in time.
+* **📍 On-watch location:** Searches within a radius you pick in Settings (0.25, 0.5, 0.75 or 1 mi; default 0.5 mi). Use a small radius in dense Manhattan, a bigger one where stops are sparse. It asks for a low-power fix first and only turns on high-accuracy GPS if that doesn't answer in time.
 * **⚡ Opens instantly:** Shows your last results right away (if under 30 minutes old, with departed buses removed) while it refreshes in the background.
 * **🚌 Live arrivals:** Tap a route card for each direction's next buses, minutes away, clock time, and the nearest stop that serves it. Each route and direction uses only its nearest stop, so you never see the same bus twice.
 * **⭐ Star a route + direction + stop:** Tap the star next to a direction. Starred buses sort to the top and appear **live** on the tile and watch face (see below).

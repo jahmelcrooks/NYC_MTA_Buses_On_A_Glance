@@ -18,6 +18,9 @@ import com.dngro.transit.data.BusRepository
 import com.dngro.transit.data.Favorite
 import com.dngro.transit.data.MtaStop
 import com.dngro.transit.data.cleanApiKey
+import com.dngro.transit.data.normalizeRadiusMiles
+import com.dngro.transit.data.radiusLabel
+import com.dngro.transit.data.radiusMeters
 import com.dngro.transit.data.withFavoriteToggled
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -43,6 +46,9 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
     private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(application)
 
     private val favorites = MutableStateFlow(AppPrefs.loadFavorites(application))
+
+    private val _radiusMiles = MutableStateFlow(AppPrefs.searchRadiusMiles(application))
+    val radiusMiles: StateFlow<Double> = _radiusMiles.asStateFlow()
 
     private val _uiState = MutableStateFlow(initialState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -99,17 +105,18 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
                 val repository = BusRepositories.forContext(getApplication())
 
                 val location = currentLocation() ?: throw LocationUnavailableException()
-                val allStops = nearbyStops(repository, location)
+                val miles = _radiusMiles.value
+                val allStops = nearbyStops(repository, location, miles)
                 val selection = selectWithinTiers(
                     items = allStops.map { stop ->
                         stop to distanceMeters(location.latitude, location.longitude, stop.lat, stop.lon)
                     },
-                    tiers = SEARCH_TIERS_METERS,
-                    minCount = MIN_STOPS,
+                    tiers = listOf(radiusMeters(miles)),
+                    minCount = 1,
                 )
 
                 if (selection.items.isEmpty()) {
-                    showError("No bus stops within 1 mi")
+                    showError("No bus stops within ${radiusLabel(miles)}. Try a larger radius in Settings.")
                     return@launch
                 }
 
@@ -173,9 +180,19 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         if (hasLocationPermission()) refresh()
     }
 
-    private suspend fun nearbyStops(repository: BusRepository, location: Location): List<MtaStop> {
+    /** Sets the search radius (one of the Settings options) and reloads with it. */
+    fun setRadiusMiles(miles: Double) {
+        val value = normalizeRadiusMiles(miles)
+        if (value == _radiusMiles.value) return
+        AppPrefs.saveSearchRadiusMiles(getApplication(), value)
+        _radiusMiles.value = value
+        stopsCache = null
+        if (hasLocationPermission()) refresh()
+    }
+
+    private suspend fun nearbyStops(repository: BusRepository, location: Location, miles: Double): List<MtaStop> {
         val cached = stopsCache
-        if (cached != null &&
+        if (cached != null && cached.miles == miles &&
             SystemClock.elapsedRealtime() - cached.loadedAtMillis < STOPS_CACHE_MS &&
             distanceMeters(location.latitude, location.longitude, cached.latitude, cached.longitude) <
             STOPS_CACHE_MOVE_METERS
@@ -185,10 +202,10 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         val stops = repository.getNearbyStops(
             lat = location.latitude,
             lon = location.longitude,
-            radiusMeters = SEARCH_TIERS_METERS.last().toInt(),
+            radiusMeters = radiusMeters(miles).toInt(),
         )
         if (stops.isNotEmpty()) {
-            stopsCache = StopsSnapshot(location.latitude, location.longitude, SystemClock.elapsedRealtime(), stops)
+            stopsCache = StopsSnapshot(location.latitude, location.longitude, SystemClock.elapsedRealtime(), stops, miles)
         }
         return stops
     }
@@ -379,18 +396,12 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         val longitude: Double,
         val loadedAtMillis: Long,
         val stops: List<MtaStop>,
+        val miles: Double,
     )
 
     private companion object {
         const val TAG = "BusViewModel"
         const val MAX_ROUTES_TO_DISPLAY = 15
-
-        /**
-         * Search close first (0.25 mi), widening to 0.5 mi and then 1 mi only if that finds fewer
-         * than [MIN_STOPS] stops. Dense areas get a short list; sparse areas still get results.
-         */
-        val SEARCH_TIERS_METERS = listOf(402f, 805f, 1609f)
-        const val MIN_STOPS = 3
 
         /** Arrivals are fetched per stop, so this caps the requests made per refresh. */
         const val MAX_STOPS_TO_QUERY = 6
