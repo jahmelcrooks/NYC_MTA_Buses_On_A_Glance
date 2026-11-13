@@ -96,6 +96,7 @@ import com.dngro.transit.data.radiusLabel
 import com.dngro.transit.presentation.theme.MtaPastelBlue
 import com.dngro.transit.presentation.theme.MtaPastelGold
 import com.dngro.transit.presentation.theme.MtaPastelGreen
+import com.dngro.transit.presentation.theme.MtaPastelRed
 import com.dngro.transit.presentation.theme.MtaPastelPurple
 import com.dngro.transit.presentation.theme.TransitTheme
 import kotlinx.coroutines.delay
@@ -775,6 +776,15 @@ fun DirectionItem(
                         color = if (reach == Reach.TIGHT) MtaPastelGold else MaterialTheme.colors.onSurface.copy(alpha = 0.5f),
                     )
                 }
+                // Only on buses that report it (part of the fleet).
+                val crowd = crowdLabel(arrival.crowding, arrival.passengers)
+                if (crowd.isNotEmpty()) {
+                    Text(
+                        text = "● $crowd",
+                        style = MaterialTheme.typography.caption2,
+                        color = crowdColor(arrival.crowding),
+                    )
+                }
             }
         }
     }
@@ -1035,6 +1045,14 @@ private fun NextBusCard(next: NextBus, now: Instant) {
             overflow = TextOverflow.Ellipsis,
         )
         val detail = listOf(next.stopsAwayText, hint).filter { it.isNotEmpty() }.joinToString(" · ")
+        val crowd = crowdLabel(next.crowding, next.passengers)
+        if (crowd.isNotEmpty()) {
+            Text(
+                text = "● $crowd",
+                style = MaterialTheme.typography.caption2,
+                color = crowdColor(next.crowding),
+            )
+        }
         if (detail.isNotEmpty()) {
             Text(
                 text = detail,
@@ -1113,4 +1131,12 @@ private fun StopScreen(
             }
         }
     }
+}
+
+@Composable
+private fun crowdColor(level: Crowding?): Color = when (level) {
+    Crowding.SEATS -> MtaPastelGreen
+    Crowding.STANDING -> MtaPastelGold
+    Crowding.FULL -> MtaPastelRed
+    null -> MaterialTheme.colors.onSurface.copy(alpha = 0.6f)
 }

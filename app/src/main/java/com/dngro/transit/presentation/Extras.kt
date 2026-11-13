@@ -46,6 +46,8 @@ internal data class NextBus(
     val stopsAwayText: String,
     val reach: Reach,
     val walkLabel: String,
+    val crowding: Crowding? = null,
+    val passengers: Int? = null,
 )
 
 /**
@@ -82,6 +84,8 @@ internal fun nextBus(routes: List<BusRouteUiModel>, now: Instant): NextBus? {
         stopsAwayText = if (distanceText == "ETA") "" else distanceText,
         reach = catchOf(best),
         walkLabel = walkLabel(best.direction.stopDistanceMeters),
+        crowding = best.arrival.crowding,
+        passengers = best.arrival.passengers,
     )
 }
 

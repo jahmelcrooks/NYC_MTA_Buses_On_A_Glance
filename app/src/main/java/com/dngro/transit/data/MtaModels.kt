@@ -119,6 +119,9 @@ data class MonitoredVehicleJourney(
 
     @SerialName("VehicleRef") val vehicleRef: String? = null,
 
+    /** "seatsAvailable", "standingAvailable" or "full", on buses that report it. Kept raw: see Crowding.kt. */
+    @SerialName("Occupancy") val occupancy: JsonElement? = null,
+
     @SerialName("MonitoredCall") val monitoredCall: MonitoredCall = MonitoredCall(),
 )
 
@@ -131,6 +134,9 @@ data class MonitoredCall(
 @Serializable
 data class Extensions(
     @SerialName("Distances") val distances: Distances? = null,
+
+    /** EstimatedPassengerCount / EstimatedPassengerCapacity on buses with counters. Kept raw: see Crowding.kt. */
+    @SerialName("Capacities") val capacities: JsonElement? = null,
 )
 
 @Serializable
