@@ -23,6 +23,10 @@ The tile and complication need no location: a star remembers its stop, so they a
 
 ---
 
+## ⌚ Pebble version
+
+There's also a Pebble version in [`pebble/`](pebble/README.md). It uses the phone for GPS and data, since Pebbles have neither.
+
 ## 🛠️ Tech Stack & Architecture
 
 * **UI:** Jetpack Compose for Wear OS (`androidx.wear.compose.material`)
