@@ -13,8 +13,16 @@ var REQUEST_TIMEOUT_MS = 12000;
 var SIZES = { ROUTE: 10, DEST: 32, STOP: 32, DIST: 12, AWAY: 24, STATUS: 64 };
 
 var lastStopArrivals = null; // reused when the user stars something, so no new download
-var lastItems = [];
 var refreshing = false;
+var refreshStartedAt = 0;
+var pendingRefresh = false; // a refresh asked for while one was running (e.g. new settings)
+var STUCK_REFRESH_MS = 60000;
+
+// Each list sent to the watch gets a generation number. The watch sends it back with a star
+// request, so a star always applies to the list the user was actually looking at.
+var GEN_WRAP = 10000;
+var generation = 0;
+var itemsByGen = {};
 
 // ---- settings and favorites (localStorage survives app restarts and updates) ----
 
@@ -56,19 +64,29 @@ function pump() {
   var message = queue.shift();
   var attempts = 0;
   var attempt = function () {
-    Pebble.sendAppMessage(message, function () {
-      sending = false;
-      pump();
-    }, function () {
+    var settled = false;
+    var fail = function () {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
       attempts++;
       if (attempts < 3) {
         setTimeout(attempt, 300);
       } else {
-        // Give up on this refresh; the watch will ask again.
+        // Give up; the watch only shows complete lists and asks again within a minute.
         queue = [];
         sending = false;
       }
-    });
+    };
+    // If the watch disconnects mid-send, neither callback may ever fire.
+    var watchdog = setTimeout(fail, 10000);
+    Pebble.sendAppMessage(message, function () {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      sending = false;
+      pump();
+    }, fail);
   };
   attempt();
 }
@@ -78,12 +96,15 @@ function sendStatus(message) {
 }
 
 function sendItems(items, metric) {
-  lastItems = items;
+  generation = (generation + 1) % GEN_WRAP;
+  itemsByGen[generation] = items;
+  delete itemsByGen[(generation + GEN_WRAP - 3) % GEN_WRAP]; // keep the last few lists
   if (items.length === 0) {
-    sendStatus('No upcoming buses nearby');
+    // An empty list replaces whatever the watch shows, with the reason as the message.
+    enqueue({ COUNT: 0, GEN: generation, STATUS: routes.fit('No upcoming buses nearby', SIZES.STATUS) });
     return;
   }
-  enqueue({ COUNT: items.length });
+  enqueue({ COUNT: items.length, GEN: generation });
   items.forEach(function (item, index) {
     enqueue({
       INDEX: index,
@@ -146,22 +167,40 @@ function getJson(path, params) {
 
 function locate() {
   return new Promise(function (resolve, reject) {
+    var done = false;
+    var fail = function () {
+      if (done) return;
+      done = true;
+      reject(new routes.BusError('location', 'Can\'t get location. Is phone GPS on?'));
+    };
+    // Some phones never call back (e.g. while a permission prompt is open).
+    var timer = setTimeout(fail, 20000);
     navigator.geolocation.getCurrentPosition(
-      function (pos) { resolve(pos.coords); },
-      function () { reject(new routes.BusError('location', 'Can\'t get location. Is phone GPS on?')); },
+      function (pos) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(pos.coords);
+      },
+      function () { clearTimeout(timer); fail(); },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
     );
   });
 }
 
 function refresh() {
-  if (refreshing) return;
+  if (refreshing && Date.now() - refreshStartedAt < STUCK_REFRESH_MS) {
+    pendingRefresh = true;
+    return;
+  }
   var settings = loadSettings();
   if (!settings.apiKey) {
     sendStatus('Add your MTA API key in the Pebble app settings');
     return;
   }
   refreshing = true;
+  refreshStartedAt = Date.now();
+  pendingRefresh = false;
   var radiusMeters = settings.radiusMiles * 1609.344;
 
   locate()
@@ -209,16 +248,21 @@ function refresh() {
     .catch(function (error) {
       sendStatus(error && error.message ? error.message : 'Something went wrong');
     })
-    .then(function () { refreshing = false; });
+    .then(function () {
+      refreshing = false;
+      if (pendingRefresh) refresh();
+    });
 }
 
 function build(stopArrivals) {
   return routes.buildItems(stopArrivals, loadFavorites(), Math.floor(Date.now() / 1000), MAX_ITEMS);
 }
 
-function toggleStar(index) {
-  var item = lastItems[index];
-  if (!item || !lastStopArrivals) return;
+/** value = generation * MAX_ITEMS + row, as sent by the watch. */
+function toggleStar(value) {
+  var items = itemsByGen[Math.floor(value / MAX_ITEMS)];
+  var item = items && items[value % MAX_ITEMS];
+  if (!item || !lastStopArrivals) return; // a list we no longer know: ignore
   var favorites = loadFavorites();
   var key = routes.favoriteKey(item.stopId, item.route, item.destination);
   if (favorites[key]) delete favorites[key]; else favorites[key] = true;

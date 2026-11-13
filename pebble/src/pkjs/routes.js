@@ -59,6 +59,12 @@ function parseJourneys(json) {
   var deliveries = (((json || {}).Siri || {}).ServiceDelivery || {}).StopMonitoringDelivery || [];
   var journeys = [];
   for (var d = 0; d < deliveries.length; d++) {
+    // Some errors (e.g. a bad key) come back as HTTP 200 with an ErrorCondition inside.
+    var error = (deliveries[d] || {}).ErrorCondition;
+    if (error) {
+      var description = text(error.Description || (error.OtherError || {}).ErrorText);
+      if (/key/i.test(description)) throw new BusError('key', 'MTA rejected the API key');
+    }
     var visits = (deliveries[d] || {}).MonitoredStopVisit || [];
     for (var v = 0; v < visits.length; v++) {
       var j = (visits[v] || {}).MonitoredVehicleJourney;

@@ -34,7 +34,8 @@
       "T1",
       "T2",
       "T3",
-      "STARRED"
+      "STARRED",
+      "GEN"
     ],
     "resources": {
       "media": []

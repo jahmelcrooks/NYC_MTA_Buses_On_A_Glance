@@ -111,3 +111,11 @@ test('config page round-trips its values', function () {
   assert.strictEqual(config.parseConfigResponse(''), null);
   assert.strictEqual(config.parseConfigResponse('CANCELLED'), null);
 });
+
+test('a bad key reported inside a 200 response is a key error', function () {
+  var json = { Siri: { ServiceDelivery: { StopMonitoringDelivery: [{ ErrorCondition: {
+    OtherError: { ErrorText: 'API key is not authorized.' } } }] } } };
+  assert.throws(function () { r.parseJourneys(json); }, function (e) { return e.kind === 'key'; });
+  var other = { Siri: { ServiceDelivery: { StopMonitoringDelivery: [{ ErrorCondition: { Description: 'No such stop' } }] } } };
+  assert.deepStrictEqual(r.parseJourneys(other), []);
+});

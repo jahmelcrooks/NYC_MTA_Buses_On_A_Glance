@@ -26,6 +26,17 @@ typedef struct {
 
 static Item s_items[MAX_ITEMS];
 static int s_count = 0;
+static int32_t s_gen = 0; // generation of the list on screen (see index.js)
+
+// A new list is collected here and only shown once complete, so the screen never empties
+// or jumps while it arrives.
+static Item s_pending[MAX_ITEMS];
+static int s_pending_count = -1;
+static int32_t s_pending_gen = 0;
+
+// After a star, keep the selection on that bus even though it moves to the top.
+static char s_reselect_route[ROUTE_LEN];
+static char s_reselect_dest[DEST_LEN];
 static char s_status[STATUS_LEN] = "Finding nearby buses...";
 
 static Window *s_main_window;
@@ -83,9 +94,9 @@ static void format_etas(const Item *item, char *buf, size_t size) {
   }
 }
 
+/** The phone sends one item per route + destination, so that pair identifies it. */
 static bool same_item(const Item *a, const Item *b) {
-  return strcmp(a->route, b->route) == 0 && strcmp(a->dest, b->dest) == 0 &&
-         strcmp(a->stop, b->stop) == 0;
+  return strcmp(a->route, b->route) == 0 && strcmp(a->dest, b->dest) == 0;
 }
 
 /** Index of the detail screen's bus in the current list, or -1. */
@@ -108,22 +119,30 @@ static void format_clock(int32_t t, char *buf, size_t size) {
 // ---------------------------------------------------------------------------
 // Talking to the phone
 
-static void send_int(uint32_t key, int32_t value) {
+/** False if the message couldn't be queued (e.g. the outbox is busy). */
+static bool send_int(uint32_t key, int32_t value) {
   DictionaryIterator *iter;
-  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return; // busy: the next tick will retry
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK) return false;
   dict_write_int32(iter, key, value);
-  app_message_outbox_send();
+  return app_message_outbox_send() == APP_MSG_OK;
 }
 
 static void request_refresh(void) {
   send_int(MESSAGE_KEY_REQUEST, 1);
 }
 
-static void toggle_star(int index) {
-  if (index < 0 || index >= s_count) return;
+static bool toggle_star(int index) {
+  if (index < 0 || index >= s_count) return false;
+  // Sent with the list's generation so the phone stars the bus the user is looking at.
+  if (!send_int(MESSAGE_KEY_TOGGLE_STAR, s_gen * MAX_ITEMS + index)) {
+    vibes_double_pulse(); // couldn't reach the phone: nothing changed
+    return false;
+  }
   s_items[index].starred = !s_items[index].starred; // instant feedback; the phone re-sorts
+  snprintf(s_reselect_route, ROUTE_LEN, "%s", s_items[index].route);
+  snprintf(s_reselect_dest, DEST_LEN, "%s", s_items[index].dest);
   vibes_short_pulse();
-  send_int(MESSAGE_KEY_TOGGLE_STAR, index);
+  return true;
 }
 
 static void copy_string(DictionaryIterator *iter, uint32_t key, char *dest, size_t size) {
@@ -150,26 +169,55 @@ static int32_t read_int(DictionaryIterator *iter, uint32_t key, int32_t fallback
 
 static void update_detail(void);
 
+/** Shows the fully received pending list. */
+static void commit_pending(void) {
+  memcpy(s_items, s_pending, sizeof(Item) * (size_t)s_pending_count);
+  s_count = s_pending_count;
+  s_gen = s_pending_gen;
+  s_pending_count = -1;
+  s_status[0] = '\0';
+
+  for (int i = 0; i < s_count; i++) {
+    if (s_detail_window && same_item(&s_items[i], &s_detail_item)) s_detail_item = s_items[i];
+  }
+  if (s_menu) {
+    menu_layer_reload_data(s_menu);
+    if (s_reselect_route[0]) {
+      for (int i = 0; i < s_count; i++) {
+        if (strcmp(s_items[i].route, s_reselect_route) == 0 && strcmp(s_items[i].dest, s_reselect_dest) == 0) {
+          menu_layer_set_selected_index(s_menu, (MenuIndex) { .section = 0, .row = (uint16_t)i },
+                                        MenuRowAlignCenter, false);
+          break;
+        }
+      }
+      s_reselect_route[0] = '\0';
+    }
+  }
+}
+
 static void inbox_received(DictionaryIterator *iter, void *context) {
 #if defined(DEMO_DATA)
   return; // keep the sample list on screen
 #endif
+  Tuple *count = dict_find(iter, MESSAGE_KEY_COUNT);
+  if (count) {
+    // A new list is starting; its items follow one message each and are shown once complete.
+    int32_t n = read_int(iter, MESSAGE_KEY_COUNT, 0);
+    s_pending_count = n < 0 ? 0 : (n > MAX_ITEMS ? MAX_ITEMS : (int)n);
+    s_pending_gen = read_int(iter, MESSAGE_KEY_GEN, 0);
+    if (s_pending_count == 0) commit_pending();
+  }
+
+  // After COUNT, so "no buses" (COUNT 0 + STATUS in one message) keeps its message.
   Tuple *status = dict_find(iter, MESSAGE_KEY_STATUS);
   if (status && status->type == TUPLE_CSTRING) {
     strncpy(s_status, status->value->cstring, STATUS_LEN - 1);
     s_status[STATUS_LEN - 1] = '\0';
   }
 
-  Tuple *count = dict_find(iter, MESSAGE_KEY_COUNT);
-  if (count) {
-    // A new list is starting; its items follow one message each.
-    s_count = 0;
-    s_status[0] = '\0';
-  }
-
   int32_t index = read_int(iter, MESSAGE_KEY_INDEX, -1);
-  if (index >= 0 && index < MAX_ITEMS) {
-    Item *item = &s_items[index];
+  if (index >= 0 && index < s_pending_count) {
+    Item *item = &s_pending[index];
     memset(item, 0, sizeof(Item));
     copy_string(iter, MESSAGE_KEY_ROUTE, item->route, ROUTE_LEN);
     copy_string(iter, MESSAGE_KEY_DEST, item->dest, DEST_LEN);
@@ -180,8 +228,7 @@ static void inbox_received(DictionaryIterator *iter, void *context) {
     item->times[1] = read_int(iter, MESSAGE_KEY_T2, 0);
     item->times[2] = read_int(iter, MESSAGE_KEY_T3, 0);
     item->starred = read_int(iter, MESSAGE_KEY_STARRED, 0) != 0;
-    if (index + 1 > s_count) s_count = index + 1;
-    if (s_detail_window && same_item(item, &s_detail_item)) s_detail_item = *item;
+    if (index == s_pending_count - 1) commit_pending();
   }
 
   if (s_menu) menu_layer_reload_data(s_menu);
@@ -259,8 +306,7 @@ static void select_click(MenuLayer *menu, MenuIndex *index, void *context) {
 
 static void select_long_click(MenuLayer *menu, MenuIndex *index, void *context) {
   if (s_count == 0) return;
-  toggle_star(index->row);
-  menu_layer_reload_data(s_menu);
+  if (toggle_star(index->row)) menu_layer_reload_data(s_menu);
 }
 
 static void main_window_load(Window *window) {
@@ -356,7 +402,7 @@ static void update_detail(void) {
 static void detail_long_select(ClickRecognizerRef recognizer, void *context) {
   int index = detail_index();
   if (index < 0) return; // this bus dropped off the latest list
-  toggle_star(index);
+  if (!toggle_star(index)) return;
   s_detail_item.starred = s_items[index].starred;
   layout_detail();
 }
