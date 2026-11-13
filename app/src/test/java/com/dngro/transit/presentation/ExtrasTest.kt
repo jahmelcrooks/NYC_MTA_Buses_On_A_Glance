@@ -20,7 +20,7 @@ class ExtrasTest {
         dest: String = "DOWNTOWN",
         meters: Float = 0f,
         pinned: Boolean = false,
-        vararg arrivals: BusArrivalDetail,
+        arrivals: List<BusArrivalDetail> = emptyList(),
     ) = BusDirectionUiModel(
         id = "r_$dest",
         destinationName = dest,
@@ -28,7 +28,7 @@ class ExtrasTest {
         stopName = "Stop",
         stopDistanceMeters = meters,
         isPinned = pinned,
-        arrivals = arrivals.toList(),
+        arrivals = arrivals,
     )
 
     private fun route(name: String, vararg directions: BusDirectionUiModel) =
@@ -57,7 +57,7 @@ class ExtrasTest {
     @Test
     fun nextBus_skipsBusesYouCannotCatch_whenAnotherIsReachable() {
         val routes = listOf(
-            route("B41", direction(meters = 400f, arrivals = arrayOf(arrival(120), arrival(900, "2 stops away")))),
+            route("B41", direction(meters = 400f, arrivals = listOf(arrival(120), arrival(900, "2 stops away")))),
         )
 
         val next = nextBus(routes, now)!!
@@ -69,7 +69,7 @@ class ExtrasTest {
 
     @Test
     fun nextBus_fallsBackToUnreachableBus_whenNothingElse() {
-        val routes = listOf(route("B41", direction(meters = 400f, arrivals = arrayOf(arrival(60)))))
+        val routes = listOf(route("B41", direction(meters = 400f, arrivals = listOf(arrival(60)))))
 
         val next = nextBus(routes, now)!!
 
@@ -80,8 +80,8 @@ class ExtrasTest {
     @Test
     fun nextBus_prefersStarredDirections_evenIfALaterBus() {
         val routes = listOf(
-            route("B44", direction("SHEEPSHEAD", arrivals = arrayOf(arrival(60)))),
-            route("B41", direction("DOWNTOWN", pinned = true, arrivals = arrayOf(arrival(600)))),
+            route("B44", direction("SHEEPSHEAD", arrivals = listOf(arrival(60)))),
+            route("B41", direction("DOWNTOWN", pinned = true, arrivals = listOf(arrival(600)))),
         )
 
         assertEquals("B41", nextBus(routes, now)!!.route)
@@ -89,7 +89,7 @@ class ExtrasTest {
 
     @Test
     fun nextBus_ignoresDepartedBuses_andNullWhenNothing() {
-        val routes = listOf(route("B41", direction(arrivals = arrayOf(arrival(-300), arrival(null)))))
+        val routes = listOf(route("B41", direction(arrivals = listOf(arrival(-300), arrival(null)))))
 
         assertNull(nextBus(routes, now))
         assertNull(nextBus(emptyList(), now))
@@ -97,21 +97,21 @@ class ExtrasTest {
 
     @Test
     fun alertTriggerTime_isTwoMinutesBeforeTheFirstBusFarEnoughAway() {
-        val d = direction(arrivals = arrayOf(arrival(100), arrival(600)))
+        val d = direction(arrivals = listOf(arrival(100), arrival(600)))
 
         // The 100 s bus is skipped (its buzz time is already past); the 600 s bus buzzes at +480 s.
         assertEquals(now.plusSeconds(480), alertTriggerTime(d, now))
-        assertNull(alertTriggerTime(direction(arrivals = arrayOf(arrival(100))), now))
-        assertNull(alertTriggerTime(direction(arrivals = arrayOf(arrival(null))), now))
+        assertNull(alertTriggerTime(direction(arrivals = listOf(arrival(100))), now))
+        assertNull(alertTriggerTime(direction(arrivals = listOf(arrival(null))), now))
     }
 
     @Test
     fun routesAtStopSorted_soonestFirst_noPredictionLast() {
         val sorted = routesAtStopSorted(
             listOf(
-                route("B44", direction(arrivals = arrayOf(arrival(null)))),
-                route("B41", direction(arrivals = arrayOf(arrival(900)))),
-                route("B8", direction(arrivals = arrayOf(arrival(60)))),
+                route("B44", direction(arrivals = listOf(arrival(null)))),
+                route("B41", direction(arrivals = listOf(arrival(900)))),
+                route("B8", direction(arrivals = listOf(arrival(60)))),
             ),
             now,
         )

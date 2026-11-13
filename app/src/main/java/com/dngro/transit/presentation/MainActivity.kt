@@ -214,7 +214,7 @@ private const val CLOCK_TICK_MS = 15_000L
 private const val AMBIENT_TICK_MS = 60_000L
 
 private fun clockFormatter(hour24: Boolean): DateTimeFormatter =
-    DateTimeFormatter.ofPattern(if (hour24) "HH:mm" else "h:mm a").withZone(ZoneId.systemDefault())
+    DateTimeFormatter.ofPattern(if (hour24) "HH:mm" else "h:mm a", java.util.Locale.US).withZone(ZoneId.systemDefault())
 
 private fun Context.hasLocationPermission(): Boolean =
     LOCATION_PERMISSIONS.any {
@@ -237,7 +237,11 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
     val notificationLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) pendingAlert?.invoke()
+        if (granted) {
+            pendingAlert?.invoke()
+        } else {
+            Toast.makeText(context, "Allow notifications to get bus alerts", Toast.LENGTH_SHORT).show()
+        }
         pendingAlert = null
     }
     val onAlert: (BusRouteUiModel, BusDirectionUiModel) -> Unit = { route, direction ->
@@ -1049,11 +1053,10 @@ private fun StopScreen(
     onBack: () -> Unit,
 ) {
     val listState = rememberScalingLazyListState()
-    var expanded by remember { mutableStateOf(emptySet<String>()) }
     val stopId = (state as? StopViewState.Success)?.stopId
     // Start with every route open: this screen is about one stop, so show everything at it.
-    LaunchedEffect(stopId) {
-        expanded = (state as? StopViewState.Success)?.routes?.map { it.routeShortName }?.toSet().orEmpty()
+    var expanded by remember(stopId) {
+        mutableStateOf((state as? StopViewState.Success)?.routes?.map { it.routeShortName }?.toSet().orEmpty())
     }
 
     Scaffold(
