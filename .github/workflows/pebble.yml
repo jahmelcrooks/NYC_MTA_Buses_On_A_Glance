@@ -42,18 +42,19 @@ jobs:
       # the detail screen. Informational only, so it never fails the build.
       - name: Emulator screenshots
         continue-on-error: true
+        timeout-minutes: 12
         run: |
           sudo apt-get install -y xvfb
           mkdir -p shots
           shoot() { # $1 = platform, $2 = name
-            xvfb-run -a sh -c "pebble install --emulator $1 build/pebble.pbw && sleep 20 && \
+            timeout 120 xvfb-run -a sh -c "pebble install --emulator $1 build/pebble.pbw && sleep 20 && \
               pebble screenshot --emulator $1 --no-open shots/$1-$2.png && \
               { pebble emu-button --emulator $1 click select || true; } && sleep 3 && \
               pebble screenshot --emulator $1 --no-open shots/$1-$2-select.png" || true
-            pebble kill || true
+            timeout 20 pebble kill || true
           }
           for p in basalt chalk emery; do shoot $p nokey; done
-          pebble clean && PEBBLE_DEMO=1 pebble build
+          pebble clean && PEBBLE_DEMO=1 timeout 300 pebble build
           for p in basalt chalk emery diorite; do shoot $p demo; done
           ls -la shots
           for f in shots/*.png; do echo "SHOT $f $(base64 -w0 "$f")"; done
