@@ -37,17 +37,24 @@ jobs:
           path: pebble/build/*.pbw
           if-no-files-found: error
 
-      # Smoke test: launch in the emulator and screenshot it. Without an API key the app should
-      # show its "add your MTA API key" screen. Informational only, so it never fails the build.
+      # Smoke test: launch in the emulator and screenshot it. The real build has no API key, so
+      # it should show the "add your key" screen; a demo build (sample buses) shows the list and
+      # the detail screen. Informational only, so it never fails the build.
       - name: Emulator screenshots
         continue-on-error: true
         run: |
           sudo apt-get install -y xvfb
           mkdir -p shots
-          for platform in basalt chalk emery; do
-            xvfb-run -a sh -c "pebble install --emulator $platform build/pebble.pbw && sleep 20 && pebble screenshot --emulator $platform --no-open shots/$platform.png" || true
+          shoot() { # $1 = platform, $2 = name
+            xvfb-run -a sh -c "pebble install --emulator $1 build/pebble.pbw && sleep 20 && \
+              pebble screenshot --emulator $1 --no-open shots/$1-$2.png && \
+              { pebble emu-button --emulator $1 click select || true; } && sleep 3 && \
+              pebble screenshot --emulator $1 --no-open shots/$1-$2-select.png" || true
             pebble kill || true
-          done
+          }
+          for p in basalt chalk emery; do shoot $p nokey; done
+          pebble clean && PEBBLE_DEMO=1 pebble build
+          for p in basalt chalk emery diorite; do shoot $p demo; done
           ls -la shots
           for f in shots/*.png; do echo "SHOT $f $(base64 -w0 "$f")"; done
       - uses: actions/upload-artifact@v4

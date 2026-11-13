@@ -158,7 +158,7 @@ function refresh() {
   if (refreshing) return;
   var settings = loadSettings();
   if (!settings.apiKey) {
-    sendStatus('Add your MTA API key in this app\'s settings in the Pebble phone app');
+    sendStatus('Add your MTA API key in the Pebble app settings');
     return;
   }
   refreshing = true;

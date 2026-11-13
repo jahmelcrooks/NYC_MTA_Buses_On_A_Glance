@@ -23,6 +23,9 @@ def build(ctx):
     for platform in ctx.env.TARGET_PLATFORMS:
         ctx.env = ctx.all_envs[platform]
         ctx.set_group(ctx.env.PLATFORM_NAME)
+        if os.environ.get('PEBBLE_DEMO'):
+            # Screenshot build only: fills the list with sample buses (see load_demo_data).
+            ctx.env.append_value('DEFINES', 'DEMO_DATA')
         app_elf = '{}/pebble-app.elf'.format(ctx.env.BUILD_DIR)
         ctx.pbl_build(source=ctx.path.ant_glob('src/c/**/*.c'), target=app_elf, bin_type='app')
 

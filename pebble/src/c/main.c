@@ -151,6 +151,9 @@ static int32_t read_int(DictionaryIterator *iter, uint32_t key, int32_t fallback
 static void update_detail(void);
 
 static void inbox_received(DictionaryIterator *iter, void *context) {
+#if defined(DEMO_DATA)
+  return; // keep the sample list on screen
+#endif
   Tuple *status = dict_find(iter, MESSAGE_KEY_STATUS);
   if (status && status->type == TUPLE_CSTRING) {
     strncpy(s_status, status->value->cstring, STATUS_LEN - 1);
@@ -193,12 +196,21 @@ static uint16_t get_num_rows(MenuLayer *menu, uint16_t section, void *context) {
 }
 
 static int16_t get_header_height(MenuLayer *menu, uint16_t section, void *context) {
-  return MENU_CELL_BASIC_HEADER_HEIGHT;
+  return PBL_IF_ROUND_ELSE(28, MENU_CELL_BASIC_HEADER_HEIGHT);
 }
 
 static void draw_header(GContext *ctx, const Layer *cell, uint16_t section, void *context) {
   const char *title = (s_count > 0 && s_status[0]) ? s_status : "NYC Buses";
+#if defined(PBL_ROUND)
+  // Centred and pushed down: the default header is left-aligned and gets cut by the circle.
+  GRect bounds = layer_get_bounds(cell);
+  graphics_context_set_text_color(ctx, GColorBlack);
+  graphics_draw_text(ctx, title, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                     GRect(bounds.size.w / 6, 8, bounds.size.w * 2 / 3, 18),
+                     GTextOverflowModeTrailingEllipsis, GTextAlignmentCenter, NULL);
+#else
   menu_cell_basic_header_draw(ctx, cell, title);
+#endif
 }
 
 static int16_t get_cell_height(MenuLayer *menu, MenuIndex *index, void *context) {
@@ -403,7 +415,34 @@ static void tick(struct tm *now, TimeUnits changed) {
   request_refresh();
 }
 
+#if defined(DEMO_DATA)
+// Sample list for emulator screenshots (CI builds with PEBBLE_DEMO=1). Never in real builds.
+static void load_demo_data(void) {
+  int32_t now = (int32_t)time(NULL);
+  const char *routes[] = { "B41", "B44-SBS", "M15", "Bx12" };
+  const char *dests[] = { "DOWNTOWN BKLYN", "SHEEPSHEAD BAY", "SOUTH FERRY", "PELHAM BAY PK" };
+  const int32_t first[] = { 180, 0, 420, 600 };
+  for (int i = 0; i < 4; i++) {
+    Item *item = &s_items[i];
+    snprintf(item->route, ROUTE_LEN, "%s", routes[i]);
+    snprintf(item->dest, DEST_LEN, "%s", dests[i]);
+    snprintf(item->stop, STOP_LEN, "Flatbush Av / Church Av");
+    snprintf(item->dist, DIST_LEN, "0.1 mi");
+    snprintf(item->away, AWAY_LEN, "2 stops away");
+    item->times[0] = now + first[i];
+    item->times[1] = now + first[i] + 660;
+    item->times[2] = now + first[i] + 1500;
+    item->starred = i == 0;
+  }
+  s_count = 4;
+  s_status[0] = '\0';
+}
+#endif
+
 static void init(void) {
+#if defined(DEMO_DATA)
+  load_demo_data();
+#endif
   app_message_register_inbox_received(inbox_received);
   app_message_open(512, 64);
 
