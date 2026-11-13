@@ -1,0 +1,43 @@
+{
+  "name": "nyc-buses-on-a-glance",
+  "author": "jahmelcrooks",
+  "version": "1.0.0",
+  "description": "Nearby NYC bus arrivals on your Pebble",
+  "license": "MIT",
+  "keywords": ["pebble-app", "transit", "nyc", "bus", "mta"],
+  "private": true,
+  "dependencies": {},
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "pebble": {
+    "displayName": "NYC Buses",
+    "uuid": "0f7c5946-ccf0-43f0-bff4-57ab65c73114",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": ["aplite", "basalt", "chalk", "diorite", "emery", "flint", "gabbro"],
+    "watchapp": {
+      "watchface": false
+    },
+    "capabilities": ["location", "configurable"],
+    "messageKeys": [
+      "REQUEST",
+      "TOGGLE_STAR",
+      "STATUS",
+      "COUNT",
+      "INDEX",
+      "ROUTE",
+      "DEST",
+      "STOP",
+      "DIST",
+      "AWAY",
+      "T1",
+      "T2",
+      "T3",
+      "STARRED"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}
