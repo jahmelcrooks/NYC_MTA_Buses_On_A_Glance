@@ -49,6 +49,7 @@ jobs:
             pebble kill || true
           done
           ls -la shots
+          for f in shots/*.png; do echo "SHOT $f $(base64 -w0 "$f")"; done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
