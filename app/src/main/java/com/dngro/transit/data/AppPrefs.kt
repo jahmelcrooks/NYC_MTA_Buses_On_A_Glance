@@ -14,6 +14,7 @@ object AppPrefs {
     private const val KEY_USER_API_KEY = "user_api_key"
     private const val KEY_FAVORITES = "favorites_v1"
     private const val KEY_SNAPSHOT = "snapshot_v1"
+    private const val KEY_RADIUS_MILES = "radius_miles"
 
     internal val json = Json {
         ignoreUnknownKeys = true
@@ -30,6 +31,22 @@ object AppPrefs {
 
     fun saveApiKey(context: Context, rawKey: String) {
         prefs(context).edit { putString(KEY_USER_API_KEY, cleanApiKey(rawKey)) }
+    }
+
+    fun hasUserApiKey(context: Context): Boolean =
+        !prefs(context).getString(KEY_USER_API_KEY, null).isNullOrBlank()
+
+    fun searchRadiusMiles(context: Context): Double =
+        normalizeRadiusMiles(
+            if (prefs(context).contains(KEY_RADIUS_MILES)) {
+                prefs(context).getFloat(KEY_RADIUS_MILES, DEFAULT_RADIUS_MILES.toFloat()).toDouble()
+            } else {
+                null
+            },
+        )
+
+    fun saveSearchRadiusMiles(context: Context, miles: Double) {
+        prefs(context).edit { putFloat(KEY_RADIUS_MILES, normalizeRadiusMiles(miles).toFloat()) }
     }
 
     fun loadFavorites(context: Context): List<Favorite> =

@@ -14,8 +14,8 @@ android {
         applicationId = "com.dngro.transit"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0-RC1"
+        versionCode = 110
+        versionName = "1.10"
 
         val localProperties = Properties()
         val localPropertiesFile = rootProject.file("local.properties")

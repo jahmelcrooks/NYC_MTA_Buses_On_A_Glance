@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.Composable
@@ -61,6 +63,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.wear.ambient.AmbientLifecycleObserver
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
+import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
 import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import androidx.wear.compose.material.ButtonDefaults
@@ -78,6 +81,9 @@ import androidx.wear.compose.material.TimeText
 import androidx.wear.compose.material.TitleCard
 import androidx.wear.compose.material.Vignette
 import androidx.wear.compose.material.VignettePosition
+import com.dngro.transit.data.AppPrefs
+import com.dngro.transit.data.RADIUS_OPTIONS_MILES
+import com.dngro.transit.data.radiusLabel
 import com.dngro.transit.presentation.theme.MtaPastelBlue
 import com.dngro.transit.presentation.theme.MtaPastelGold
 import com.dngro.transit.presentation.theme.MtaPastelGreen
@@ -211,7 +217,8 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
     val listState = rememberScalingLazyListState()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
-    var showKeyEntry by remember { mutableStateOf(false) }
+    val radiusMiles by viewModel.radiusMiles.collectAsStateWithLifecycle()
+    var screen by remember { mutableStateOf(Screen.List) }
 
     // Recompute "N min away" between network refreshes so labels never go stale.
     val now by produceState(initialValue = Instant.now(), ambient) {
@@ -228,15 +235,29 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
         return
     }
 
-    if (showKeyEntry) {
-        ApiKeyScreen(
-            onSave = { key ->
-                viewModel.saveApiKey(key)
-                showKeyEntry = false
-            },
-            onCancel = { showKeyEntry = false },
-        )
-        return
+    when (screen) {
+        Screen.ApiKey -> {
+            BackHandler { screen = Screen.List }
+            ApiKeyScreen(
+                onSave = { key ->
+                    viewModel.saveApiKey(key)
+                    screen = Screen.List
+                },
+                onCancel = { screen = Screen.List },
+            )
+            return
+        }
+        Screen.Settings -> {
+            BackHandler { screen = Screen.List }
+            SettingsScreen(
+                radiusMiles = radiusMiles,
+                onRadiusSelected = { viewModel.setRadiusMiles(it) },
+                onEditApiKey = { screen = Screen.ApiKey },
+                onDone = { screen = Screen.List },
+            )
+            return
+        }
+        Screen.List -> Unit
     }
 
     Scaffold(
@@ -273,7 +294,7 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
                     Spacer(modifier = Modifier.height(12.dp))
                     if (state.needsApiKey) {
                         Chip(
-                            onClick = { showKeyEntry = true },
+                            onClick = { screen = Screen.ApiKey },
                             label = { Text("Enter API key") },
                             colors = ChipDefaults.primaryChipColors(
                                 backgroundColor = MtaPastelBlue,
@@ -281,11 +302,16 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
                             ),
                         )
                     } else {
-                        CompactButton(
-                            onClick = { viewModel.refresh() },
-                            colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.Black)
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            CompactButton(
+                                onClick = { viewModel.refresh() },
+                                colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.Black)
+                            }
+                            CompactButton(onClick = { screen = Screen.Settings }) {
+                                Icon(Icons.Default.Settings, contentDescription = "Settings")
+                            }
                         }
                     }
                 }
@@ -293,6 +319,8 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
                     ScalingLazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
+                        // Crown / rotating bezel scrolls the list (this is also the default).
+                        rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
                     ) {
                         item {
                             ListHeader {
@@ -342,12 +370,17 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
                                     .padding(vertical = 16.dp),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                CompactButton(
-                                    onClick = { viewModel.refresh() },
-                                    enabled = !isRefreshing,
-                                    colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
-                                ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.Black)
+                                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    CompactButton(
+                                        onClick = { viewModel.refresh() },
+                                        enabled = !isRefreshing,
+                                        colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color.Black)
+                                    }
+                                    CompactButton(onClick = { screen = Screen.Settings }) {
+                                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                                    }
                                 }
                             }
                         }
@@ -707,6 +740,77 @@ private fun ApiKeyScreen(onSave: (String) -> Unit, onCancel: () -> Unit) {
                     colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
                 ) {
                     Icon(Icons.Default.Check, contentDescription = "Save key", tint = Color.Black)
+                }
+            }
+        }
+    }
+}
+
+private enum class Screen { List, Settings, ApiKey }
+
+/** Search radius and API key. Radius changes apply (and reload) as soon as one is tapped. */
+@Composable
+private fun SettingsScreen(
+    radiusMiles: Double,
+    onRadiusSelected: (Double) -> Unit,
+    onEditApiKey: () -> Unit,
+    onDone: () -> Unit,
+) {
+    val context = LocalContext.current
+    val listState = rememberScalingLazyListState()
+    val keyStatus = if (AppPrefs.hasUserApiKey(context)) "Custom key saved" else "Using built-in key"
+
+    Scaffold(
+        timeText = { TimeText() },
+        vignette = { Vignette(vignettePosition = VignettePosition.TopAndBottom) },
+        positionIndicator = { PositionIndicator(scalingLazyListState = listState) },
+    ) {
+        ScalingLazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
+        ) {
+            item { ListHeader { Text("Settings", fontWeight = FontWeight.Bold) } }
+            item {
+                Text(
+                    text = "Search radius",
+                    style = MaterialTheme.typography.caption2,
+                    color = MaterialTheme.colors.onSurface.copy(alpha = 0.7f),
+                )
+            }
+            items(RADIUS_OPTIONS_MILES) { miles ->
+                val selected = miles == radiusMiles
+                Chip(
+                    onClick = { onRadiusSelected(miles) },
+                    label = { Text(radiusLabel(miles)) },
+                    icon = if (selected) {
+                        { Icon(Icons.Default.Check, contentDescription = "Selected", tint = Color.Black) }
+                    } else {
+                        null
+                    },
+                    colors = if (selected) {
+                        ChipDefaults.primaryChipColors(backgroundColor = MtaPastelBlue, contentColor = Color.Black)
+                    } else {
+                        ChipDefaults.secondaryChipColors()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                Chip(
+                    onClick = onEditApiKey,
+                    label = { Text("MTA API key") },
+                    secondaryLabel = { Text(keyStatus) },
+                    colors = ChipDefaults.secondaryChipColors(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                CompactButton(
+                    onClick = onDone,
+                    colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
+                ) {
+                    Icon(Icons.Default.Check, contentDescription = "Done", tint = Color.Black)
                 }
             }
         }
