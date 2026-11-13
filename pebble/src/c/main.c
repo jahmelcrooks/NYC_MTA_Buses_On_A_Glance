@@ -37,7 +37,7 @@ static TextLayer *s_detail_title;
 static TextLayer *s_detail_body;
 // The detail screen shows a copy, so a list refresh (every minute) doesn't close or blank it.
 static Item s_detail_item;
-static char s_detail_title_text[ROUTE_LEN + DEST_LEN + 8];
+static char s_detail_title_text[ROUTE_LEN + 4];
 static char s_detail_body_text[256];
 
 // ---------------------------------------------------------------------------
@@ -215,7 +215,13 @@ static void draw_header(GContext *ctx, const Layer *cell, uint16_t section, void
 
 static int16_t get_cell_height(MenuLayer *menu, MenuIndex *index, void *context) {
   if (s_count == 0) return PBL_IF_ROUND_ELSE(120, 110);
-  return PBL_IF_ROUND_ELSE(MENU_CELL_ROUND_FOCUSED_TALL_CELL_HEIGHT, 44);
+#if defined(PBL_ROUND)
+  return MENU_CELL_ROUND_FOCUSED_TALL_CELL_HEIGHT;
+#elif PBL_DISPLAY_HEIGHT >= 200
+  return 58; // Pebble Time 2: bigger system fonts need taller rows
+#else
+  return 44;
+#endif
 }
 
 static void draw_row(GContext *ctx, const Layer *cell, MenuIndex *index, void *context) {
@@ -285,32 +291,36 @@ static void main_window_unload(Window *window) {
 // Detail screen: one route and direction
 
 static void build_detail_text(const Item *item) {
-  snprintf(s_detail_title_text, sizeof(s_detail_title_text), "%s%s\nto %s",
-           item->starred ? "* " : "", item->route, item->dest);
+  snprintf(s_detail_title_text, sizeof(s_detail_title_text), "%s%s",
+           item->starred ? "* " : "", item->route);
 
+  // Times first: they're what you look at. Then where the bus goes and which stop.
   char *buf = s_detail_body_text;
   const size_t size = sizeof(s_detail_body_text);
   size_t used = 0;
-  advance(&used, snprintf(buf, size, "at %s, %s\n", item->stop, item->dist), size);
+  buf[0] = '\0';
   bool any = false;
   for (int i = 0; i < MAX_TIMES; i++) {
     int m = minutes_until(item->times[i]);
     if (m < 0) continue;
     char clock[12];
     format_clock(item->times[i], clock, sizeof(clock));
+    const char *sep = any ? "\n" : "";
     if (m == 0) {
-      advance(&used, snprintf(buf + used, size - used, "\nNow (%s)", clock), size);
+      advance(&used, snprintf(buf + used, size - used, "%sNow (%s)", sep, clock), size);
     } else {
-      advance(&used, snprintf(buf + used, size - used, "\n%d min (%s)", m, clock), size);
+      advance(&used, snprintf(buf + used, size - used, "%s%d min (%s)", sep, m, clock), size);
     }
     any = true;
   }
   if (!any) {
-    advance(&used, snprintf(buf + used, size - used, "\nNo predictions right now"), size);
+    advance(&used, snprintf(buf + used, size - used, "No predictions right now"), size);
   }
   if (item->away[0]) {
-    advance(&used, snprintf(buf + used, size - used, "\nNext bus: %s", item->away), size);
+    advance(&used, snprintf(buf + used, size - used, "\nNext bus %s", item->away), size);
   }
+  advance(&used, snprintf(buf + used, size - used, "\n\nto %s\nat %s, %s", item->dest, item->stop,
+                          item->dist), size);
   snprintf(buf + used, size - used, "%s",
            item->starred ? "\n\nHold SELECT to unstar" : "\n\nHold SELECT to star");
 }
