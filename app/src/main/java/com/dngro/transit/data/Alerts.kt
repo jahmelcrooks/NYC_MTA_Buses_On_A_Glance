@@ -23,7 +23,7 @@ internal fun parseAlerts(element: JsonElement?): List<ServiceAlert> {
     if (element == null) return emptyList()
     return try {
         extractAlerts(element)
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         emptyList() // alerts are a bonus: never let them break the arrivals
     }
 }
@@ -41,7 +41,6 @@ private fun extractAlerts(element: JsonElement): List<ServiceAlert> =
             ServiceAlert(text, lines)
         }
         .distinctBy { it.text }
-}
 
 /** Alerts that mention [route], as display text. At most [max]. */
 internal fun alertsForRoute(alerts: List<ServiceAlert>, route: String, max: Int = 2): List<String> =
