@@ -21,8 +21,8 @@ android {
         applicationId = "com.dngro.nycbuses"
         minSdk = 30
         targetSdk = 36
-        versionCode = 110
-        versionName = "1.10"
+        versionCode = 111
+        versionName = "1.11"
 
         // From local.properties (mta.api.key=...) or, on CI, the MTA_API_KEY environment variable.
         // Escaped so a stray quote or backslash in the key can't break the generated BuildConfig.

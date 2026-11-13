@@ -6,6 +6,8 @@ A 100% standalone **Wear OS** Android application designed for quick, seamless a
 
 ## 🌟 Key Features
 
+**v1.11 (this branch):** next-bus card, walking-time awareness ("too soon" / "hurry"), tap a stop name for every route there, optional "buzz me 2 min before" bell, km / 24-hour settings, clear saved key, remembered stops near places you use the app. Alerts are estimates, don't survive a reboot, and are untested on a watch.
+
 **v1.10:** Settings screen (gear button next to refresh) for the search radius and API key; crown / rotating bezel scrolling (enabled explicitly, not yet tested on a watch).
 
 * **⌚ Standalone watch app:** Runs on the watch itself with no companion phone (`standalone="true"`). The watch needs its own Wi-Fi or LTE for live data.

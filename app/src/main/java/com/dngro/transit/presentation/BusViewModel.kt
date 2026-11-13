@@ -15,12 +15,18 @@ import com.dngro.transit.data.BusApiException
 import com.dngro.transit.data.BusError
 import com.dngro.transit.data.BusRepositories
 import com.dngro.transit.data.BusRepository
+import com.dngro.transit.data.DisplayPrefs
+import com.dngro.transit.data.SavedPlace
+import com.dngro.transit.data.findPlace
+import com.dngro.transit.data.withPlaceSaved
+import com.dngro.transit.alerts.ArrivalAlerts
 import com.dngro.transit.data.Favorite
 import com.dngro.transit.data.MtaStop
 import com.dngro.transit.data.cleanApiKey
 import com.dngro.transit.data.normalizeRadiusMiles
 import com.dngro.transit.data.radiusLabel
 import com.dngro.transit.data.radiusMeters
+import com.dngro.transit.data.favoriteKey
 import com.dngro.transit.data.withFavoriteToggled
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -49,6 +55,18 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _radiusMiles = MutableStateFlow(AppPrefs.searchRadiusMiles(application))
     val radiusMiles: StateFlow<Double> = _radiusMiles.asStateFlow()
+
+    private val _display = MutableStateFlow(AppPrefs.displayPrefs(application))
+    val display: StateFlow<DisplayPrefs> = _display.asStateFlow()
+
+    private val _alertKeys = MutableStateFlow(ArrivalAlerts.activeKeys(application))
+    /** Keys (see favoriteKey) of directions with a pending "buzz me" alert. */
+    val alertKeys: StateFlow<Set<String>> = _alertKeys.asStateFlow()
+
+    private val _stopView = MutableStateFlow<StopViewState?>(null)
+    /** Non-null while the "all routes at this stop" screen is open. */
+    val stopView: StateFlow<StopViewState?> = _stopView.asStateFlow()
+    private var stopViewJob: Job? = null
 
     private val _uiState = MutableStateFlow(initialState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -199,6 +217,12 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         ) {
             return cached.stops
         }
+        val nowMillis = System.currentTimeMillis()
+        val saved = findPlace(AppPrefs.loadPlaces(getApplication()), location.latitude, location.longitude, miles, nowMillis)
+        if (saved != null) {
+            stopsCache = StopsSnapshot(location.latitude, location.longitude, SystemClock.elapsedRealtime(), saved.stops, miles)
+            return saved.stops
+        }
         val stops = repository.getNearbyStops(
             lat = location.latitude,
             lon = location.longitude,
@@ -206,6 +230,12 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         )
         if (stops.isNotEmpty()) {
             stopsCache = StopsSnapshot(location.latitude, location.longitude, SystemClock.elapsedRealtime(), stops, miles)
+            try {
+                val place = SavedPlace(location.latitude, location.longitude, miles, nowMillis, stops)
+                AppPrefs.savePlaces(getApplication(), withPlaceSaved(AppPrefs.loadPlaces(getApplication()), place))
+            } catch (e: Exception) {
+                Log.w(TAG, "Couldn't remember these stops: ${e.message}")
+            }
         }
         return stops
     }
@@ -337,6 +367,88 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         return results[0]
     }
 
+    fun setMetric(metric: Boolean) = updateDisplay { it.copy(metric = metric) }
+
+    fun setHour24(hour24: Boolean) = updateDisplay { it.copy(hour24 = hour24) }
+
+    private fun updateDisplay(change: (DisplayPrefs) -> DisplayPrefs) {
+        val updated = change(_display.value)
+        _display.value = updated
+        AppPrefs.saveDisplayPrefs(getApplication(), updated)
+    }
+
+    /** Forgets the key typed on the watch; the build-time key (if any) is used again. */
+    fun clearApiKey() {
+        AppPrefs.clearApiKey(getApplication())
+        if (hasLocationPermission()) refresh()
+    }
+
+    /** Opens the stop screen: every route at [direction]'s stop, loaded live. */
+    fun openStop(direction: BusDirectionUiModel) {
+        if (direction.stopId.isBlank()) return
+        stopViewJob?.cancel()
+        _stopView.value = StopViewState.Loading(direction.stopName)
+        stopViewJob = viewModelScope.launch {
+            try {
+                val repository = BusRepositories.forContext(getApplication())
+                val monitoring = repository.getStopMonitoring(direction.stopId)
+                val stop = MtaStop(id = direction.stopId, name = direction.stopName)
+                val routes = buildRoutes(
+                    stopArrivals = listOf(StopArrivals(stop, direction.stopDistanceMeters, monitoring.journeys, monitoring.alerts)),
+                    routeLongNames = emptyMap(),
+                    favoriteKeys = favoriteKeys(),
+                    maxRoutes = MAX_ROUTES_TO_DISPLAY,
+                )
+                _stopView.value = if (routes.isEmpty()) {
+                    StopViewState.Error(direction.stopName, "No upcoming buses at this stop")
+                } else {
+                    StopViewState.Success(direction.stopId, direction.stopName, routesAtStopSorted(routes, Instant.now()))
+                }
+            } catch (e: BusApiException) {
+                _stopView.value = StopViewState.Error(direction.stopName, e.error.userMessage())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Stop view failed", e)
+                _stopView.value = StopViewState.Error(direction.stopName, "Something went wrong. Try again.")
+            }
+        }
+    }
+
+    fun closeStop() {
+        stopViewJob?.cancel()
+        _stopView.value = null
+    }
+
+    /**
+     * Sets or cancels the "buzz me 2 min before" alert for [direction]'s next bus. Returns false
+     * if there is no bus far enough away to warn about.
+     */
+    fun toggleAlert(route: BusRouteUiModel, direction: BusDirectionUiModel): Boolean {
+        val key = favoriteKey(direction.stopId, route.routeShortName, direction.destinationName)
+        val context = getApplication<Application>()
+        if (key in _alertKeys.value) {
+            ArrivalAlerts.cancel(context, key)
+            _alertKeys.value = ArrivalAlerts.activeKeys(context)
+            return true
+        }
+        val trigger = alertTriggerTime(direction, Instant.now()) ?: return false
+        ArrivalAlerts.schedule(
+            context = context,
+            key = key,
+            title = "${route.routeShortName} to ${direction.destinationName}",
+            text = "Arriving around ${ALERT_LEAD_SECONDS / 60} min from now at ${direction.stopName}",
+            triggerAtMillis = trigger.toEpochMilli(),
+        )
+        _alertKeys.value = ArrivalAlerts.activeKeys(context)
+        return true
+    }
+
+    /** Drops alerts whose time has passed so their bells reset. */
+    fun refreshAlertKeys() {
+        _alertKeys.value = ArrivalAlerts.activeKeys(getApplication())
+    }
+
     fun toggleRouteExpansion(routeId: String) {
         _uiState.update { state ->
             if (state is UiState.Success) {
@@ -379,6 +491,9 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val keys = favoriteKeys()
+        _stopView.update { view ->
+            if (view is StopViewState.Success) view.copy(routes = applyFavorites(view.routes, keys)) else view
+        }
         _uiState.update { state ->
             if (state is UiState.Success) {
                 state.copy(routes = applyFavorites(state.routes, keys), favoriteKeys = keys)

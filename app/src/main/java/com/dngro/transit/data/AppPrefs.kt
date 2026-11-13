@@ -3,6 +3,8 @@ package com.dngro.transit.data
 import android.content.Context
 import androidx.core.content.edit
 import com.dngro.transit.BuildConfig
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 
 /**
@@ -15,6 +17,10 @@ object AppPrefs {
     private const val KEY_FAVORITES = "favorites_v1"
     private const val KEY_SNAPSHOT = "snapshot_v1"
     private const val KEY_RADIUS_MILES = "radius_miles"
+    private const val KEY_METRIC = "use_metric"
+    private const val KEY_HOUR24 = "use_24h"
+    private const val KEY_PLACES = "places_v1"
+    private const val KEY_ALERTS = "arrival_alerts_v1"
 
     internal val json = Json {
         ignoreUnknownKeys = true
@@ -31,6 +37,43 @@ object AppPrefs {
 
     fun saveApiKey(context: Context, rawKey: String) {
         prefs(context).edit { putString(KEY_USER_API_KEY, cleanApiKey(rawKey)) }
+    }
+
+    fun clearApiKey(context: Context) {
+        prefs(context).edit { remove(KEY_USER_API_KEY) }
+    }
+
+    fun displayPrefs(context: Context): DisplayPrefs {
+        val p = prefs(context)
+        return DisplayPrefs(
+            metric = p.getBoolean(KEY_METRIC, false),
+            hour24 = if (p.contains(KEY_HOUR24)) {
+                p.getBoolean(KEY_HOUR24, false)
+            } else {
+                android.text.format.DateFormat.is24HourFormat(context)
+            },
+        )
+    }
+
+    fun saveDisplayPrefs(context: Context, display: DisplayPrefs) {
+        prefs(context).edit {
+            putBoolean(KEY_METRIC, display.metric)
+            putBoolean(KEY_HOUR24, display.hour24)
+        }
+    }
+
+    fun loadPlaces(context: Context): List<SavedPlace> = decodePlaces(prefs(context).getString(KEY_PLACES, null))
+
+    fun savePlaces(context: Context, places: List<SavedPlace>) {
+        prefs(context).edit { putString(KEY_PLACES, encodePlaces(places)) }
+    }
+
+    /** Pending buzz alerts as "key" to trigger time (epoch ms). The alarms themselves live in AlarmManager. */
+    fun loadAlerts(context: Context): Map<String, Long> =
+        decodeAlerts(prefs(context).getString(KEY_ALERTS, null))
+
+    fun saveAlerts(context: Context, alerts: Map<String, Long>) {
+        prefs(context).edit { putString(KEY_ALERTS, encodeAlerts(alerts)) }
     }
 
     fun hasUserApiKey(context: Context): Boolean =
@@ -66,3 +109,17 @@ object AppPrefs {
 /** Removes the whitespace and stray quotes that come from pasting or typing a key on a watch. */
 internal fun cleanApiKey(raw: String): String =
     raw.filterNot { it.isWhitespace() }.trim('"', '\'')
+
+/** Units and clock style. */
+data class DisplayPrefs(val metric: Boolean = false, val hour24: Boolean = false)
+
+internal fun encodeAlerts(alerts: Map<String, Long>): String = AppPrefs.json.encodeToString(MapSerializer(String.serializer(), Long.serializer()), alerts)
+
+internal fun decodeAlerts(raw: String?): Map<String, Long> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    return try {
+        AppPrefs.json.decodeFromString(MapSerializer(String.serializer(), Long.serializer()), raw)
+    } catch (e: Exception) {
+        emptyMap()
+    }
+}

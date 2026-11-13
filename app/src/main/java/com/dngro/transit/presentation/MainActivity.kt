@@ -4,7 +4,9 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,6 +38,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -79,10 +84,13 @@ import androidx.wear.compose.material.PositionIndicator
 import androidx.wear.compose.material.Scaffold
 import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
+import androidx.wear.compose.material.ToggleChip
 import androidx.wear.compose.material.TitleCard
 import androidx.wear.compose.material.Vignette
 import androidx.wear.compose.material.VignettePosition
 import com.dngro.transit.data.AppPrefs
+import com.dngro.transit.data.DisplayPrefs
+import com.dngro.transit.data.favoriteKey
 import com.dngro.transit.data.RADIUS_OPTIONS_MILES
 import com.dngro.transit.data.radiusLabel
 import com.dngro.transit.presentation.theme.MtaPastelBlue
@@ -94,7 +102,6 @@ import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
 
 class MainActivity : ComponentActivity() {
     private val viewModel: BusViewModel by viewModels()
@@ -153,6 +160,7 @@ class MainActivity : ComponentActivity() {
                     LaunchedEffect(lifecycleOwner, ambient) {
                         if (!ambient) {
                             lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                                viewModel.refreshAlertKeys()
                                 viewModel.refreshIfStale()
                                 while (true) {
                                     delay(AUTO_REFRESH_CHECK_MS)
@@ -205,8 +213,8 @@ private const val CLOCK_TICK_MS = 15_000L
 /** Ambient mode redraws about once a minute, so recompute no more often than that. */
 private const val AMBIENT_TICK_MS = 60_000L
 
-private val clockFormatter: DateTimeFormatter =
-    DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
+private fun clockFormatter(hour24: Boolean): DateTimeFormatter =
+    DateTimeFormatter.ofPattern(if (hour24) "HH:mm" else "h:mm a").withZone(ZoneId.systemDefault())
 
 private fun Context.hasLocationPermission(): Boolean =
     LOCATION_PERMISSIONS.any {
@@ -219,6 +227,37 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val radiusMiles by viewModel.radiusMiles.collectAsStateWithLifecycle()
+    val display by viewModel.display.collectAsStateWithLifecycle()
+    val alertKeys by viewModel.alertKeys.collectAsStateWithLifecycle()
+    val stopView by viewModel.stopView.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    // Notification permission is only asked for when the user first taps a bell (Android 13+).
+    var pendingAlert by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val notificationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) pendingAlert?.invoke()
+        pendingAlert = null
+    }
+    val onAlert: (BusRouteUiModel, BusDirectionUiModel) -> Unit = { route, direction ->
+        val run = {
+            if (!viewModel.toggleAlert(route, direction)) {
+                Toast.makeText(context, "No bus far enough away to warn about", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val key = favoriteKey(direction.stopId, route.routeShortName, direction.destinationName)
+        val needsPermission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            key !in alertKeys &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        if (needsPermission) {
+            pendingAlert = run
+            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            run()
+        }
+    }
     var screen by remember { mutableStateOf(Screen.List) }
 
     // Recompute "N min away" between network refreshes so labels never go stale.
@@ -248,11 +287,34 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
             )
             return
         }
+        Screen.Stop -> {
+            BackHandler {
+                viewModel.closeStop()
+                screen = Screen.List
+            }
+            StopScreen(
+                state = stopView,
+                now = now,
+                display = display,
+                alertKeys = alertKeys,
+                onFavoriteToggle = { route, direction -> viewModel.toggleFavorite(route, direction) },
+                onAlert = onAlert,
+                onBack = {
+                    viewModel.closeStop()
+                    screen = Screen.List
+                },
+            )
+            return
+        }
         Screen.Settings -> {
             BackHandler { screen = Screen.List }
             SettingsScreen(
                 radiusMiles = radiusMiles,
                 onRadiusSelected = { viewModel.setRadiusMiles(it) },
+                display = display,
+                onMetricChange = { viewModel.setMetric(it) },
+                onHour24Change = { viewModel.setHour24(it) },
+                onClearApiKey = { viewModel.clearApiKey() },
                 onEditApiKey = { screen = Screen.ApiKey },
                 onDone = { screen = Screen.List },
             )
@@ -355,13 +417,23 @@ fun BusApp(viewModel: BusViewModel, ambient: Boolean = false) {
                                 )
                             }
                         }
+                        nextBus(state.routes, now)?.let { next ->
+                            item { NextBusCard(next = next, now = now) }
+                        }
                         items(state.routes) { route ->
                             BusRouteGroup(
                                 route = route,
                                 expandedRouteIds = state.expandedRouteIds,
                                 now = now,
+                                display = display,
+                                alertKeys = alertKeys,
                                 onRouteToggle = { viewModel.toggleRouteExpansion(route.routeShortName) },
                                 onFavoriteToggle = { direction -> viewModel.toggleFavorite(route, direction) },
+                                onAlertToggle = { direction -> onAlert(route, direction) },
+                                onStopClick = { direction ->
+                                    viewModel.openStop(direction)
+                                    screen = Screen.Stop
+                                },
                             )
                         }
                         item {
@@ -466,8 +538,12 @@ fun BusRouteGroup(
     route: BusRouteUiModel,
     expandedRouteIds: Set<String>,
     now: Instant,
+    display: DisplayPrefs,
+    alertKeys: Set<String>,
     onRouteToggle: () -> Unit,
     onFavoriteToggle: (BusDirectionUiModel) -> Unit,
+    onAlertToggle: (BusDirectionUiModel) -> Unit,
+    onStopClick: ((BusDirectionUiModel) -> Unit)?,
 ) {
     val isRouteExpanded = expandedRouteIds.contains(route.routeShortName)
     val badgeColor = if (route.routeShortName.contains("SBS", ignoreCase = true)) {
@@ -538,7 +614,11 @@ fun BusRouteGroup(
                         routeName = route.routeShortName,
                         direction = direction,
                         now = now,
+                        display = display,
+                        alertActive = favoriteKey(direction.stopId, route.routeShortName, direction.destinationName) in alertKeys,
                         onFavoriteToggle = { onFavoriteToggle(direction) },
+                        onAlertToggle = { onAlertToggle(direction) },
+                        onStopClick = onStopClick?.let { click -> { click(direction) } },
                     )
                     Spacer(
                         modifier = Modifier
@@ -557,8 +637,19 @@ fun DirectionItem(
     routeName: String,
     direction: BusDirectionUiModel,
     now: Instant,
+    display: DisplayPrefs,
+    alertActive: Boolean,
     onFavoriteToggle: () -> Unit,
+    onAlertToggle: () -> Unit,
+    onStopClick: (() -> Unit)?,
 ) {
+    val formatter = remember(display.hour24) { clockFormatter(display.hour24) }
+    val walkSec = walkSeconds(direction.stopDistanceMeters)
+    val distanceText = if (direction.stopDistanceMeters < Float.MAX_VALUE / 2) {
+        formatDistanceToUser(direction.stopDistanceMeters, display.metric)
+    } else {
+        direction.stopDistanceText
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -594,20 +685,38 @@ fun DirectionItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (direction.stopDistanceText.isNotEmpty()) {
+            if (distanceText.isNotEmpty()) {
                 Text(
-                    text = direction.stopDistanceText,
+                    text = distanceText,
                     style = MaterialTheme.typography.caption2,
                     color = MaterialTheme.colors.onSurface.copy(alpha = 0.7f),
                 )
             }
+            // Bell: buzz shortly before the next bus arrives.
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onAlertToggle() }
+                    .padding(start = 6.dp, top = 2.dp, bottom = 2.dp),
+            ) {
+                Icon(
+                    imageVector = if (alertActive) Icons.Default.Notifications else Icons.Outlined.NotificationsNone,
+                    contentDescription = if (alertActive) "Cancel alert" else "Alert me before the next bus",
+                    tint = if (alertActive) MtaPastelGreen else MaterialTheme.colors.onSurface.copy(alpha = 0.5f),
+                    modifier = Modifier.size(20.dp),
+                )
+            }
         }
 
+        val walk = walkLabel(direction.stopDistanceMeters)
         Text(
-            text = "at ${direction.stopName}",
+            text = "at ${direction.stopName}" + if (walk.isNotEmpty()) " · $walk" else "",
             style = MaterialTheme.typography.caption2,
             color = MaterialTheme.colors.onSurface.copy(alpha = 0.6f),
-            modifier = Modifier.padding(top = 2.dp, bottom = 4.dp),
+            textDecoration = if (onStopClick != null) TextDecoration.Underline else null,
+            modifier = Modifier
+                .then(if (onStopClick != null) Modifier.clickable { onStopClick() } else Modifier)
+                .padding(top = 2.dp, bottom = 4.dp),
         )
 
         val upcoming = direction.upcoming(now)
@@ -625,9 +734,18 @@ fun DirectionItem(
                     minutes <= 0L -> "Arriving"
                     else -> "$minutes min away"
                 }
-                val clockTime = arrival.expected?.let { clockFormatter.format(it) }.orEmpty()
+                val reach = reachability(arrival.expected, now, walkSec)
+                val clockTime = when (reach) {
+                    Reach.TOO_SOON -> "too soon"
+                    Reach.TIGHT -> "hurry"
+                    Reach.OK -> arrival.expected?.let { formatter.format(it) }.orEmpty()
+                }
                 val isArriving = minutes != null && minutes <= 1L
-                val timeColor = if (isArriving) MtaPastelGreen else MtaPastelGold
+                val timeColor = when {
+                    reach == Reach.TOO_SOON -> MaterialTheme.colors.onSurface.copy(alpha = 0.4f)
+                    isArriving -> MtaPastelGreen
+                    else -> MtaPastelGold
+                }
 
                 Row(
                     modifier = Modifier
@@ -645,7 +763,7 @@ fun DirectionItem(
                     Text(
                         text = clockTime,
                         style = MaterialTheme.typography.caption2,
-                        color = MaterialTheme.colors.onSurface.copy(alpha = 0.5f),
+                        color = if (reach == Reach.TIGHT) MtaPastelGold else MaterialTheme.colors.onSurface.copy(alpha = 0.5f),
                     )
                 }
             }
@@ -749,19 +867,26 @@ private fun ApiKeyScreen(onSave: (String) -> Unit, onCancel: () -> Unit) {
     }
 }
 
-private enum class Screen { List, Settings, ApiKey }
+private enum class Screen { List, Settings, ApiKey, Stop }
 
 /** Search radius and API key. Radius changes apply (and reload) as soon as one is tapped. */
 @Composable
 private fun SettingsScreen(
     radiusMiles: Double,
     onRadiusSelected: (Double) -> Unit,
+    display: DisplayPrefs,
+    onMetricChange: (Boolean) -> Unit,
+    onHour24Change: (Boolean) -> Unit,
+    onClearApiKey: () -> Unit,
     onEditApiKey: () -> Unit,
     onDone: () -> Unit,
 ) {
     val context = LocalContext.current
     val listState = rememberScalingLazyListState()
-    val keyStatus = if (AppPrefs.hasUserApiKey(context)) "Custom key saved" else "Using built-in key"
+    // Not observable state: re-read after the key is cleared by bumping this counter.
+    var keyVersion by remember { mutableStateOf(0) }
+    val hasUserKey = remember(keyVersion) { AppPrefs.hasUserApiKey(context) }
+    val keyStatus = if (hasUserKey) "Custom key saved" else "Using built-in key"
 
     Scaffold(
         timeText = { TimeText() },
@@ -800,6 +925,34 @@ private fun SettingsScreen(
                 )
             }
             item {
+                ToggleChip(
+                    checked = display.metric,
+                    onCheckedChange = onMetricChange,
+                    label = { Text("Kilometres") },
+                    toggleControl = {
+                        Icon(
+                            imageVector = if (display.metric) Icons.Default.Check else Icons.Default.Close,
+                            contentDescription = if (display.metric) "On" else "Off",
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                ToggleChip(
+                    checked = display.hour24,
+                    onCheckedChange = onHour24Change,
+                    label = { Text("24-hour clock") },
+                    toggleControl = {
+                        Icon(
+                            imageVector = if (display.hour24) Icons.Default.Check else Icons.Default.Close,
+                            contentDescription = if (display.hour24) "On" else "Off",
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
                 Chip(
                     onClick = onEditApiKey,
                     label = { Text("MTA API key") },
@@ -808,12 +961,146 @@ private fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            if (hasUserKey) {
+                item {
+                    Chip(
+                        onClick = {
+                            onClearApiKey()
+                            keyVersion++
+                        },
+                        label = { Text("Clear saved key") },
+                        colors = ChipDefaults.secondaryChipColors(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
             item {
                 CompactButton(
                     onClick = onDone,
                     colors = ButtonDefaults.buttonColors(backgroundColor = MtaPastelBlue),
                 ) {
                     Icon(Icons.Default.Check, contentDescription = "Done", tint = Color.Black)
+                }
+            }
+        }
+    }
+}
+
+/** The one bus to catch, big, at the top: route, minutes, "2 stops away" and walking time. */
+@Composable
+private fun NextBusCard(next: NextBus, now: Instant) {
+    val minutes = minutesUntil(next.expected, now)
+    val timeText = if (minutes <= 0L) "Now" else "$minutes min"
+    val color = when (next.reach) {
+        Reach.TOO_SOON -> MaterialTheme.colors.onSurface.copy(alpha = 0.5f)
+        Reach.TIGHT -> MtaPastelGold
+        Reach.OK -> MtaPastelGreen
+    }
+    val hint = when (next.reach) {
+        Reach.TOO_SOON -> "Can't make it · ${next.walkLabel}"
+        Reach.TIGHT -> "Hurry · ${next.walkLabel}"
+        Reach.OK -> next.walkLabel
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colors.surface)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = "Next bus",
+            style = MaterialTheme.typography.caption2,
+            color = MaterialTheme.colors.onSurface.copy(alpha = 0.6f),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = next.route, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = Color.White)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(text = timeText, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = color)
+        }
+        Text(
+            text = "to ${next.destination}",
+            style = MaterialTheme.typography.caption2,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        val detail = listOf(next.stopsAwayText, hint).filter { it.isNotEmpty() }.joinToString(" · ")
+        if (detail.isNotEmpty()) {
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.caption2,
+                color = MaterialTheme.colors.onSurface.copy(alpha = 0.7f),
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/** Every route at one stop (opened by tapping a stop name), soonest first. */
+@Composable
+private fun StopScreen(
+    state: StopViewState?,
+    now: Instant,
+    display: DisplayPrefs,
+    alertKeys: Set<String>,
+    onFavoriteToggle: (BusRouteUiModel, BusDirectionUiModel) -> Unit,
+    onAlert: (BusRouteUiModel, BusDirectionUiModel) -> Unit,
+    onBack: () -> Unit,
+) {
+    val listState = rememberScalingLazyListState()
+    var expanded by remember { mutableStateOf(emptySet<String>()) }
+    val stopId = (state as? StopViewState.Success)?.stopId
+    // Start with every route open: this screen is about one stop, so show everything at it.
+    LaunchedEffect(stopId) {
+        expanded = (state as? StopViewState.Success)?.routes?.map { it.routeShortName }?.toSet().orEmpty()
+    }
+
+    Scaffold(
+        timeText = { TimeText() },
+        vignette = { Vignette(vignettePosition = VignettePosition.TopAndBottom) },
+        positionIndicator = { PositionIndicator(scalingLazyListState = listState) },
+    ) {
+        when (state) {
+            null, is StopViewState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(indicatorColor = MtaPastelBlue, trackColor = MtaPastelBlue.copy(alpha = 0.2f))
+            }
+            is StopViewState.Error -> Column(
+                modifier = Modifier.fillMaxSize().padding(16.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(text = state.message, textAlign = TextAlign.Center, style = MaterialTheme.typography.body2)
+                Spacer(modifier = Modifier.height(8.dp))
+                CompactButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Back") }
+            }
+            is StopViewState.Success -> ScalingLazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                rotaryScrollableBehavior = RotaryScrollableDefaults.behavior(listState),
+            ) {
+                item { ListHeader { Text(state.stopName, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis) } }
+                items(state.routes) { route ->
+                    BusRouteGroup(
+                        route = route,
+                        expandedRouteIds = expanded,
+                        now = now,
+                        display = display,
+                        alertKeys = alertKeys,
+                        onRouteToggle = {
+                            expanded = if (route.routeShortName in expanded) {
+                                expanded - route.routeShortName
+                            } else {
+                                expanded + route.routeShortName
+                            }
+                        },
+                        onFavoriteToggle = { direction -> onFavoriteToggle(route, direction) },
+                        onAlertToggle = { direction -> onAlert(route, direction) },
+                        onStopClick = null,
+                    )
+                }
+                item {
+                    CompactButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Close") }
                 }
             }
         }

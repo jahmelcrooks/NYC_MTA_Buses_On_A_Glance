@@ -173,7 +173,10 @@ internal fun BusDirectionUiModel.upcoming(now: Instant, graceSeconds: Long = 60)
 internal fun minutesUntil(expected: Instant, now: Instant): Long =
     Math.floorDiv(Duration.between(now, expected).seconds + 30L, 60L).coerceAtLeast(0L)
 
-internal fun formatDistanceToUser(meters: Float): String {
+internal fun formatDistanceToUser(meters: Float, metric: Boolean = false): String {
+    if (metric) {
+        return if (meters < 100f) "${meters.toInt()} m away" else String.format(Locale.US, "%.1f km away", meters / 1000f)
+    }
     val miles = meters * 0.000621371f
     return if (miles < 0.1f) {
         "${(meters * 3.28084f).toInt()} ft away"

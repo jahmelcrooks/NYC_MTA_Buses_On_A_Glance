@@ -27,6 +27,19 @@ sealed class UiState {
     data class Error(val message: String, val needsApiKey: Boolean = false) : UiState()
 }
 
+/** The "all routes at this stop" screen, loaded live for the one stop. */
+sealed class StopViewState {
+    abstract val stopName: String
+
+    data class Loading(override val stopName: String) : StopViewState()
+    data class Success(
+        val stopId: String,
+        override val stopName: String,
+        val routes: List<BusRouteUiModel>,
+    ) : StopViewState()
+    data class Error(override val stopName: String, val message: String) : StopViewState()
+}
+
 // The models below are @Serializable so the last results can be saved for an instant next launch.
 
 @Serializable
