@@ -28,6 +28,12 @@ class BusApiException(
     cause: Throwable? = null,
 ) : Exception(message, cause)
 
+/** What one stop reported: the buses coming, and any alerts. */
+data class StopMonitoring(
+    val journeys: List<MonitoredVehicleJourney>,
+    val alerts: List<ServiceAlert>,
+)
+
 class BusRepository(private val apiKey: String) {
 
     private val json = Json {
@@ -55,18 +61,19 @@ class BusRepository(private val apiKey: String) {
     }
 
     /**
-     * Stops within roughly half a mile of the given location.
+     * Stops in a box reaching [radiusMeters] around the location. The caller filters by true
+     * distance (the box corners are farther than the radius).
      * @throws BusApiException on any failure.
      */
-    suspend fun getNearbyStops(lat: Double, lon: Double): List<MtaStop> {
+    suspend fun getNearbyStops(lat: Double, lon: Double, radiusMeters: Int): List<MtaStop> {
         requireKey()
         val response = call {
             apiService.getStopsForLocation(
                 lat = lat,
                 lon = lon,
-                latSpan = 0.0075,
-                lonSpan = 0.0095,
-                radius = 805,
+                latSpan = latSpanDegrees(radiusMeters.toDouble()),
+                lonSpan = lonSpanDegrees(radiusMeters.toDouble(), lat),
+                radius = radiusMeters,
                 apiKey = apiKey,
             )
         }
@@ -76,10 +83,10 @@ class BusRepository(private val apiKey: String) {
     }
 
     /**
-     * Real-time arrivals for one stop, flattened out of the SIRI envelope.
+     * Real-time arrivals for one stop, plus any service alerts in the same response.
      * @throws BusApiException on any failure.
      */
-    suspend fun getBusArrivals(stopId: String): List<MonitoredVehicleJourney> {
+    suspend fun getStopMonitoring(stopId: String): StopMonitoring {
         requireKey()
         val response = call {
             apiService.getStopMonitoring(
@@ -87,10 +94,18 @@ class BusRepository(private val apiKey: String) {
                 apiKey = apiKey,
             )
         }
-        return response.siri?.serviceDelivery?.stopMonitoringDelivery.orEmpty()
-            .flatMap { it.monitoredStopVisit }
-            .mapNotNull { it.monitoredVehicleJourney }
+        val delivery = response.siri?.serviceDelivery
+        return StopMonitoring(
+            journeys = delivery?.stopMonitoringDelivery.orEmpty()
+                .flatMap { it.monitoredStopVisit }
+                .mapNotNull { it.monitoredVehicleJourney },
+            alerts = parseAlerts(delivery?.situationExchangeDelivery),
+        )
     }
+
+    /** Just the buses, for callers (tile, complication) that don't show alerts. */
+    suspend fun getBusArrivals(stopId: String): List<MonitoredVehicleJourney> =
+        getStopMonitoring(stopId).journeys
 
     private fun requireKey() {
         if (apiKey.isBlank()) {

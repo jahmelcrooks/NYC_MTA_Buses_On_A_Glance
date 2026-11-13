@@ -11,6 +11,7 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -68,6 +69,9 @@ data class SiriData(
 @Serializable
 data class ServiceDelivery(
     @SerialName("StopMonitoringDelivery") val stopMonitoringDelivery: List<StopMonitoringDelivery> = emptyList(),
+    // Kept as raw JSON on purpose: its shape isn't verified, and a wrong guess here must not
+    // break decoding of the arrivals. See parseAlerts().
+    @SerialName("SituationExchangeDelivery") val situationExchangeDelivery: JsonElement? = null,
 )
 
 @Serializable
