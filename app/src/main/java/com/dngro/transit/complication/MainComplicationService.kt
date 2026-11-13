@@ -11,13 +11,17 @@ import androidx.wear.watchface.complications.data.ShortTextComplicationData
 import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUpdateRequester
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.SuspendingComplicationDataSourceService
+import com.dngro.transit.data.AppPrefs
+import com.dngro.transit.data.BusRepositories
 import com.dngro.transit.presentation.MainActivity
+import com.dngro.transit.presentation.etaCompact
+import com.dngro.transit.presentation.loadFavoriteEtas
+import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
 
 /**
- * Shows the user's first starred bus route on the watch face. Tapping it opens the app.
- *
- * It shows the route name only, not arrival times: reading the user's location and calling
- * the MTA API from a background service is a bigger change (it needs background location).
+ * Watch-face slot showing the next arrival of the first bus the user starred, e.g. "B41  3m".
+ * Needs no location: a star names its own stop. Tapping it opens the app.
  */
 class MainComplicationService : SuspendingComplicationDataSourceService() {
 
@@ -25,26 +29,37 @@ class MainComplicationService : SuspendingComplicationDataSourceService() {
         if (type != ComplicationType.SHORT_TEXT) {
             return null
         }
-        return createComplicationData("B41", "Starred bus route B41")
+        return createComplicationData("3m", "B41", "B41, next bus in 3 minutes")
     }
 
     override suspend fun onComplicationRequest(request: ComplicationRequest): ComplicationData {
-        val prefs = applicationContext.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        // A Set has no order, so sort it: the same route is shown every time (the tile does too).
-        val route = prefs.getStringSet(PINNED_ROUTES_KEY, emptySet()).orEmpty().sorted().firstOrNull()
+        val favorite = AppPrefs.loadFavorites(applicationContext).firstOrNull()
+            ?: return createComplicationData("Bus", null, "Open NYC Buses On A Glance and star a bus")
 
-        return if (route != null) {
-            createComplicationData(route, "Starred bus route $route")
-        } else {
-            createComplicationData("Bus", "Open NYC Buses On A Glance")
+        if (AppPrefs.apiKey(applicationContext).isBlank()) {
+            return createComplicationData("Key", favorite.route, "Open NYC Buses On A Glance to add an API key")
         }
+
+        val now = Instant.now()
+        val eta = withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+            loadFavoriteEtas(BusRepositories.forContext(applicationContext), listOf(favorite), now, 1)
+                .firstOrNull()
+        }
+        val text = etaCompact(eta?.arrivals, now)
+        val description = if (text == "–") {
+            "${favorite.route}, no arrival time available"
+        } else {
+            "${favorite.route} to ${favorite.destination}, next bus $text"
+        }
+        return createComplicationData(text, favorite.route, description)
     }
 
-    private fun createComplicationData(text: String, contentDescription: String): ComplicationData =
+    private fun createComplicationData(text: String, title: String?, contentDescription: String): ComplicationData =
         ShortTextComplicationData.Builder(
             text = PlainComplicationText.Builder(text).build(),
             contentDescription = PlainComplicationText.Builder(contentDescription).build(),
         )
+            .setTitle(title?.let { PlainComplicationText.Builder(it).build() })
             .setTapAction(openAppIntent())
             .build()
 
@@ -57,13 +72,9 @@ class MainComplicationService : SuspendingComplicationDataSourceService() {
         )
 
     companion object {
-        private const val PREFS_NAME = "nyc_buses_prefs"
-        private const val PINNED_ROUTES_KEY = "pinned_routes"
+        private const val FETCH_TIMEOUT_MS = 8_000L
 
-        /**
-         * The manifest sets UPDATE_PERIOD_SECONDS=0 (no automatic refresh), so call this
-         * whenever the starred routes change.
-         */
+        /** Ask the watch face for fresh data now, e.g. right after the user stars a bus. */
         fun requestUpdate(context: Context) {
             ComplicationDataSourceUpdateRequester
                 .create(context, ComponentName(context, MainComplicationService::class.java))

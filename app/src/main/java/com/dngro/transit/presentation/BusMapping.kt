@@ -2,6 +2,9 @@ package com.dngro.transit.presentation
 
 import com.dngro.transit.data.MonitoredVehicleJourney
 import com.dngro.transit.data.MtaStop
+import com.dngro.transit.data.ServiceAlert
+import com.dngro.transit.data.alertsForRoute
+import com.dngro.transit.data.favoriteKey
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -17,6 +20,7 @@ internal data class StopArrivals(
     val stop: MtaStop,
     val distanceMeters: Float,
     val journeys: List<MonitoredVehicleJourney>,
+    val alerts: List<ServiceAlert> = emptyList(),
 )
 
 /**
@@ -29,7 +33,7 @@ internal data class StopArrivals(
 internal fun buildRoutes(
     stopArrivals: List<StopArrivals>,
     routeLongNames: Map<String, String>,
-    pinnedRoutes: Set<String>,
+    favoriteKeys: Set<String>,
     maxRoutes: Int,
 ): List<BusRouteUiModel> {
     val byRoute = LinkedHashMap<String, LinkedHashMap<String, BusDirectionUiModel>>()
@@ -42,11 +46,20 @@ internal fun buildRoutes(
         for ((key, journeys) in grouped) {
             val (route, destination) = key
             val directions = byRoute.getOrPut(route) { LinkedHashMap() }
-            if (directions.containsKey(destination)) continue // a nearer stop already covers it
+            val existing = directions[destination]
+            if (existing != null) {
+                // A nearer stop already covers it, unless the user starred THIS stop and not that
+                // one. A starred stop must stay visible (and unstar-able) even when it is no longer
+                // the nearest, or it would silently stay on the tile with no way to remove it.
+                val existingStarred = favoriteKey(existing.stopId, route, destination) in favoriteKeys
+                val thisStarred = favoriteKey(entry.stop.id, route, destination) in favoriteKeys
+                if (existingStarred || !thisStarred) continue
+            }
 
             directions[destination] = BusDirectionUiModel(
                 id = "${route}_$destination",
                 destinationName = destination,
+                stopId = entry.stop.id,
                 stopName = entry.stop.name,
                 stopDistanceMeters = entry.distanceMeters,
                 stopDistanceText = formatDistanceToUser(entry.distanceMeters),
@@ -55,21 +68,78 @@ internal fun buildRoutes(
         }
     }
 
-    return byRoute
-        .map { (route, directions) ->
-            BusRouteUiModel(
-                routeShortName = route,
-                routeLongName = routeLongNames[route].orEmpty().substringBefore(" - "),
-                nearestStopDistanceMeters = directions.values.minOf { it.stopDistanceMeters },
-                isPinned = route in pinnedRoutes,
-                directions = directions.values.toList(),
-            )
+    val allAlerts = stopArrivals.flatMap { it.alerts }
+    val routes = byRoute.map { (route, directions) ->
+        BusRouteUiModel(
+            routeShortName = route,
+            routeLongName = routeLongNames[route].orEmpty().substringBefore(" - "),
+            nearestStopDistanceMeters = directions.values.minOf { it.stopDistanceMeters },
+            alerts = alertsForRoute(allAlerts, route),
+            directions = directions.values.toList(),
+        )
+    }
+    return applyFavorites(routes, favoriteKeys).take(maxRoutes)
+}
+
+/**
+ * Marks starred directions, and sorts routes with a starred direction first, then by distance.
+ * Cheap enough to re-run whenever the user stars something.
+ */
+internal fun applyFavorites(
+    routes: List<BusRouteUiModel>,
+    favoriteKeys: Set<String>,
+): List<BusRouteUiModel> =
+    routes
+        .map { route ->
+            val directions = route.directions.map {
+                it.copy(isPinned = favoriteKey(it.stopId, route.routeShortName, it.destinationName) in favoriteKeys)
+            }
+            route.copy(directions = directions, isPinned = directions.any { it.isPinned })
         }
         .sortedWith(
             compareByDescending<BusRouteUiModel> { it.isPinned }
                 .thenBy { it.nearestStopDistanceMeters },
         )
-        .take(maxRoutes)
+
+/** Stops chosen for the search, and how far out we had to look to find them. */
+internal data class NearbySelection<T>(val items: List<Pair<T, Float>>, val radiusMeters: Float)
+
+/**
+ * Looks close first: returns the stops within the smallest radius in [tiers] that holds at least
+ * [minCount] of them. If even the widest radius has fewer, returns whatever is inside it.
+ * [tiers] must be in ascending order.
+ */
+internal fun <T> selectWithinTiers(
+    items: List<Pair<T, Float>>,
+    tiers: List<Float>,
+    minCount: Int,
+): NearbySelection<T> {
+    val sorted = items.sortedBy { it.second }
+    for (tier in tiers) {
+        val within = sorted.filter { it.second <= tier }
+        if (within.size >= minCount) return NearbySelection(within, tier)
+    }
+    val widest = tiers.maxOrNull() ?: 0f
+    return NearbySelection(sorted.filter { it.second <= widest }, widest)
+}
+
+/**
+ * Drops arrivals that have already left (allowing [graceSeconds] of slack), then any direction
+ * or route left empty. Used on saved results, whose times may be old by the next launch.
+ */
+internal fun pruneExpired(
+    routes: List<BusRouteUiModel>,
+    now: Instant,
+    graceSeconds: Long = 60,
+): List<BusRouteUiModel> {
+    val cutoff = now.minusSeconds(graceSeconds)
+    return routes.mapNotNull { route ->
+        val directions = route.directions.mapNotNull { direction ->
+            val arrivals = direction.arrivals.filter { it.expected != null && !it.expected.isBefore(cutoff) }
+            if (arrivals.isEmpty()) null else direction.copy(arrivals = arrivals)
+        }
+        if (directions.isEmpty()) null else route.copy(directions = directions)
+    }
 }
 
 private fun List<MonitoredVehicleJourney>.toArrivals(): List<BusArrivalDetail> =
@@ -88,6 +158,16 @@ private fun List<MonitoredVehicleJourney>.toArrivals(): List<BusArrivalDetail> =
         }
         .sortedBy { it.expected ?: Instant.MAX }
         .take(MAX_ARRIVALS_PER_DIRECTION)
+
+/**
+ * Arrivals that haven't left yet (with [graceSeconds] of slack). Arrivals with no prediction are
+ * kept: they have no time to compare. Used when drawing, so a bus that has since left never shows
+ * as "Now", even if the list on screen is old (e.g. while the watch sat in ambient mode).
+ */
+internal fun BusDirectionUiModel.upcoming(now: Instant, graceSeconds: Long = 60): List<BusArrivalDetail> {
+    val cutoff = now.minusSeconds(graceSeconds)
+    return arrivals.filter { it.expected == null || !it.expected.isBefore(cutoff) }
+}
 
 /** Whole minutes until [expected], rounded to the nearest minute and never negative. */
 internal fun minutesUntil(expected: Instant, now: Instant): Long =

@@ -5,6 +5,7 @@ import com.dngro.transit.data.Extensions
 import com.dngro.transit.data.MonitoredCall
 import com.dngro.transit.data.MonitoredVehicleJourney
 import com.dngro.transit.data.MtaStop
+import com.dngro.transit.data.favoriteKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -76,7 +77,7 @@ class BusMappingTest {
     }
 
     @Test
-    fun pinnedRoutesSortFirst() {
+    fun starredDirectionSortsItsRouteFirst_andIsMarkedPinned() {
         val near = StopArrivals(
             stop("MTA_1", "Near St"), 100f,
             listOf(journey("B44", "SHEEPSHEAD", "V1", "2026-11-11T14:25:00.000-05:00")),
@@ -86,10 +87,64 @@ class BusMappingTest {
             listOf(journey("B41", "DOWNTOWN", "V2", "2026-11-11T14:26:00.000-05:00")),
         )
 
-        val routes = buildRoutes(listOf(near, far), emptyMap(), setOf("B41"), 15)
+        val starred = setOf(favoriteKey("MTA_2", "B41", "DOWNTOWN"))
+        val routes = buildRoutes(listOf(near, far), emptyMap(), starred, 15)
 
         assertEquals(listOf("B41", "B44"), routes.map { it.routeShortName })
         assertTrue(routes[0].isPinned)
+        assertTrue(routes[0].directions.single().isPinned)
+        assertTrue(!routes[1].isPinned)
+    }
+
+    @Test
+    fun starAtADifferentStop_doesNotMarkThisStop() {
+        val entry = StopArrivals(
+            stop("MTA_9", "Other St"), 100f,
+            listOf(journey("B41", "DOWNTOWN", "V1", "2026-11-11T14:25:00.000-05:00")),
+        )
+
+        val routes = buildRoutes(
+            listOf(entry), emptyMap(), setOf(favoriteKey("MTA_2", "B41", "DOWNTOWN")), 15,
+        )
+
+        assertTrue(!routes.single().isPinned)
+    }
+
+    @Test
+    fun starredFartherStop_staysVisibleEvenThoughANearerStopHasTheSameRoute() {
+        val near = StopArrivals(
+            stop("MTA_1", "Near St"), 100f,
+            listOf(journey("B41", "DOWNTOWN", "V1", "2026-11-11T14:25:00.000-05:00")),
+        )
+        val far = StopArrivals(
+            stop("MTA_2", "Far St"), 300f,
+            listOf(journey("B41", "DOWNTOWN", "V2", "2026-11-11T14:30:00.000-05:00")),
+        )
+
+        val starred = setOf(favoriteKey("MTA_2", "B41", "DOWNTOWN"))
+        val direction = buildRoutes(listOf(near, far), emptyMap(), starred, 15)
+            .single().directions.single()
+
+        assertEquals("Far St", direction.stopName)
+        assertTrue(direction.isPinned)
+    }
+
+    @Test
+    fun upcoming_dropsBusesThatAlreadyLeft_butKeepsUnpredictedOnes() {
+        val entry = StopArrivals(
+            stop("MTA_1", "Near St"), 100f,
+            listOf(
+                journey("B41", "DOWNTOWN", "V1", "2026-11-11T14:15:00.000-05:00"), // 19:15Z, gone
+                journey("B41", "DOWNTOWN", "V2", "2026-11-11T14:25:00.000-05:00"), // 19:25Z
+                journey("B41", "DOWNTOWN", "V3", null),
+            ),
+        )
+
+        val direction = buildRoutes(listOf(entry), emptyMap(), emptySet(), 15)
+            .single().directions.single()
+
+        assertEquals(2, direction.upcoming(now).size)
+        assertNull(direction.upcoming(now).last().expected)
     }
 
     @Test

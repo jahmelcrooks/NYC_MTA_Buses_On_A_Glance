@@ -6,13 +6,18 @@ A 100% standalone **Wear OS** Android application designed for quick, seamless a
 
 ## 🌟 Key Features
 
-* **⌚ 100% Standalone Watch App:** Runs independently on your Wear OS watch with zero reliance on a companion phone app (`standalone="true"`).
-* **📍 On-Watch GPS & Proximity Math:** Uses `FusedLocationProviderClient` with `PRIORITY_HIGH_ACCURACY` to calculate real-time distance from your wrist to nearby stops within a **0.5-mile (805m)** radius.
-* **⭐ Persistent Favorites ("Hold to Pin"):** Tap the star icon (⭐) on any bus route to pin it to the top of your list. Saved to disk in `SharedPreferences` so your favorites persist anywhere you go.
-* **⚡ 1-Tap Drop-Down Schedules:** Tap any bus card (**B41**, **B44-SBS**, **M15**) to immediately reveal live arrival ETAs, clock times, and distance to your stop.
-* **🎨 Pastel MTA Design System:** Soft MTA Pastel Blue (`#5C9CE6`), Pastel Gold (`#FFD166`), Pastel Green (`#70C1B3`), and SBS Purple (`#B39DDB`) styling over OLED-friendly true black.
-* **🧩 Wear OS Tile:** A swipe-in Tile listing your starred routes; tapping it opens the app.
-* **🕐 Watch-Face Complication:** A short-text complication showing your first starred route (alphabetically); tapping it opens the app. It shows the route name only, not arrival times.
+* **⌚ Standalone watch app:** Runs on the watch itself with no companion phone (`standalone="true"`). The watch needs its own Wi-Fi or LTE for live data.
+* **📍 On-watch location:** Looks close first (0.25 mi) and widens to 0.5 mi, then 1 mi, only if fewer than 3 stops are found. Dense Manhattan blocks get a short, relevant list; sparse areas still get results. It asks for a low-power fix first and only turns on high-accuracy GPS if that doesn't answer in time.
+* **⚡ Opens instantly:** Shows your last results right away (if under 30 minutes old, with departed buses removed) while it refreshes in the background.
+* **🚌 Live arrivals:** Tap a route card for each direction's next buses, minutes away, clock time, and the nearest stop that serves it. Each route and direction uses only its nearest stop, so you never see the same bus twice.
+* **⭐ Star a route + direction + stop:** Tap the star next to a direction. Starred buses sort to the top and appear **live** on the tile and watch face (see below).
+* **⚠️ Service alerts:** Routes with a detour or delay show a ⚠ and the alert text when expanded. *Unverified:* parsed from MTA's SIRI alert section, which hasn't been checked against a live response yet; if the format differs you simply see no alerts.
+* **🧩 Tile:** Next arrivals for up to 3 starred buses, refreshed about every minute. Tap to open the app.
+* **🕐 Watch-face complication:** Next arrival of your first starred bus (e.g. `B41  3m`), updated about every 5 minutes. Tap to open the app.
+* **🌙 Ambient mode:** A dim, plain-text view of the next bus for your first few directions. Auto-refresh pauses while the screen is dimmed.
+* **🎨 Pastel MTA design:** MTA-inspired colors over OLED-friendly true black.
+
+The tile and complication need no location: a star remembers its stop, so they ask MTA for that stop directly.
 
 ---
 
@@ -33,14 +38,23 @@ A 100% standalone **Wear OS** Android application designed for quick, seamless a
 * Wear OS device or emulator running Wear OS 3.0+ (API 30+)
 * MTA Bus Time API Key (Get a free API key at [MTA Bus Time Developer Portal](https://bustime.mta.info/wiki/Developers/Index/))
 
-### 2. Configure Local API Keys
-Create a `local.properties` file in the root directory (if it doesn't already exist) and add your MTA API Key:
+### 2. Provide your API key (pick one)
+
+**A. At build time.** Create `local.properties` in the project root:
 
 ```properties
 mta.api.key=YOUR_MTA_BUS_TIME_API_KEY
 ```
 
-> ⚠️ **Note:** `local.properties` is ignored by `.gitignore`, so the key is never committed to Git. But the key **is compiled into the APK** (`BuildConfig`), where anyone with the file can extract it. Don't publish a build made with a key you aren't willing to expose and rotate.
+**B. On the watch, no rebuild.** If the app has no key it shows an **Enter API key** button (you type it with the watch keyboard). Or push it over adb, which is much easier than typing:
+
+```bash
+adb shell am start -n com.dngro.transit/.presentation.MainActivity --es mta_api_key YOUR_KEY
+```
+
+A key entered on the watch overrides the built-in one. It is stored in the app's private storage and excluded from backups.
+
+> ⚠️ **Note:** `local.properties` is ignored by `.gitignore`, so the key is never committed to Git. But a build-time key **is compiled into the APK** (`BuildConfig`), where anyone with the file can extract it. For a build you share, leave the key out and let each person use option B with their own free key.
 
 ### 3. Build & Run
 Open the project in **Android Studio**, select your Wear OS device or emulator, and click **Run ▶**.

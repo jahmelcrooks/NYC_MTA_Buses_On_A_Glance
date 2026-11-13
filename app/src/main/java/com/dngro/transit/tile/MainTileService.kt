@@ -7,6 +7,7 @@ import androidx.wear.protolayout.DeviceParametersBuilders.DeviceParameters
 import androidx.wear.protolayout.DimensionBuilders.dp
 import androidx.wear.protolayout.LayoutElementBuilders
 import androidx.wear.protolayout.LayoutElementBuilders.Column
+import androidx.wear.protolayout.LayoutElementBuilders.Row
 import androidx.wear.protolayout.LayoutElementBuilders.Spacer
 import androidx.wear.protolayout.ModifiersBuilders
 import androidx.wear.protolayout.ResourceBuilders
@@ -16,12 +17,30 @@ import androidx.wear.protolayout.material.Typography
 import androidx.wear.protolayout.material.layouts.PrimaryLayout
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
+import com.dngro.transit.data.AppPrefs
+import com.dngro.transit.data.BusRepositories
+import com.dngro.transit.presentation.FavoriteEta
 import com.dngro.transit.presentation.MainActivity
+import com.dngro.transit.presentation.etaSummary
+import com.dngro.transit.presentation.loadFavoriteEtas
 import com.google.android.horologist.annotations.ExperimentalHorologistApi
 import com.google.android.horologist.tiles.SuspendingTileService
+import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
 
 private const val RESOURCES_VERSION = "1"
 
+/** The tile has a short time budget; give up on the network well before it runs out. */
+private const val FETCH_TIMEOUT_MS = 8_000L
+private const val MAX_TILE_FAVORITES = 3
+private const val FRESHNESS_MS = 60_000L
+
+private val GOLD = argb(0xFFFFD166.toInt())
+private val BLUE = argb(0xFF5C9CE6.toInt())
+private val LIGHT_GRAY = argb(0xFFBBBBBB.toInt())
+private val WHITE = argb(0xFFFFFFFF.toInt())
+
+/** Live arrivals for the user's starred buses. Needs no location: a star names its own stop. */
 @OptIn(ExperimentalHorologistApi::class)
 class MainTileService : SuspendingTileService() {
 
@@ -34,8 +53,18 @@ class MainTileService : SuspendingTileService() {
     override suspend fun tileRequest(
         requestParams: RequestBuilders.TileRequest,
     ): TileBuilders.Tile {
-        val prefs = applicationContext.getSharedPreferences("nyc_buses_prefs", MODE_PRIVATE)
-        val pinnedRoutes = prefs.getStringSet("pinned_routes", emptySet()) ?: emptySet()
+        val context = applicationContext
+        val favorites = AppPrefs.loadFavorites(context)
+        val hasKey = AppPrefs.apiKey(context).isNotBlank()
+        val now = Instant.now()
+
+        val etas: List<FavoriteEta> = if (favorites.isEmpty() || !hasKey) {
+            emptyList()
+        } else {
+            withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+                loadFavoriteEtas(BusRepositories.forContext(context), favorites, now, MAX_TILE_FAVORITES)
+            } ?: favorites.take(MAX_TILE_FAVORITES).map { FavoriteEta(it, null) }
+        }
 
         return TileBuilders.Tile.Builder()
             .setResourcesVersion(RESOURCES_VERSION)
@@ -45,14 +74,23 @@ class MainTileService : SuspendingTileService() {
                         TimelineBuilders.TimelineEntry.Builder()
                             .setLayout(
                                 LayoutElementBuilders.Layout.Builder()
-                                    .setRoot(tileLayout(requestParams.deviceConfiguration, applicationContext, pinnedRoutes))
+                                    .setRoot(
+                                        tileLayout(
+                                            deviceParameters = requestParams.deviceConfiguration,
+                                            context = context,
+                                            hasFavorites = favorites.isNotEmpty(),
+                                            hasKey = hasKey,
+                                            etas = etas,
+                                            now = now,
+                                        ),
+                                    )
                                     .build(),
                             )
                             .build(),
                     )
                     .build(),
             )
-            .setFreshnessIntervalMillis(3 * 60 * 1000)
+            .setFreshnessIntervalMillis(FRESHNESS_MS)
             .build()
     }
 }
@@ -60,38 +98,30 @@ class MainTileService : SuspendingTileService() {
 private fun tileLayout(
     deviceParameters: DeviceParameters,
     context: Context,
-    pinnedRoutes: Set<String>,
+    hasFavorites: Boolean,
+    hasKey: Boolean,
+    etas: List<FavoriteEta>,
+    now: Instant,
 ): LayoutElementBuilders.LayoutElement {
     val content = Column.Builder()
 
-    if (pinnedRoutes.isEmpty()) {
-        content.addContent(
-            Text.Builder(context, "No Starred Buses")
-                .setTypography(Typography.TYPOGRAPHY_BODY1)
-                .setColor(argb(0xFFFFD166.toInt())) // Pastel Gold
-                .build(),
-        )
-        content.addContent(Spacer.Builder().setHeight(dp(4f)).build())
-        content.addContent(
-            Text.Builder(context, "Star a bus in the app to pin it here")
-                .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                .setColor(argb(0xFFBBBBBB.toInt()))
-                .build(),
-        )
-    } else {
-        content.addContent(
-            Text.Builder(context, "Starred Favorites:")
-                .setTypography(Typography.TYPOGRAPHY_CAPTION2)
-                .setColor(argb(0xFFAAAAAA.toInt()))
-                .build(),
-        )
-        content.addContent(Spacer.Builder().setHeight(dp(4f)).build())
-
-        pinnedRoutes.sorted().take(4).forEach { route ->
+    when {
+        !hasKey -> {
+            content.addContent(label(context, "API key needed", Typography.TYPOGRAPHY_BODY1, GOLD))
+            content.addContent(Spacer.Builder().setHeight(dp(4f)).build())
+            content.addContent(label(context, "Open the app to add it", Typography.TYPOGRAPHY_CAPTION2, LIGHT_GRAY))
+        }
+        !hasFavorites -> {
+            content.addContent(label(context, "No Starred Buses", Typography.TYPOGRAPHY_BODY1, GOLD))
+            content.addContent(Spacer.Builder().setHeight(dp(4f)).build())
+            content.addContent(label(context, "Star a bus in the app to see it here", Typography.TYPOGRAPHY_CAPTION2, LIGHT_GRAY))
+        }
+        else -> etas.forEach { eta ->
             content.addContent(
-                Text.Builder(context, "★ $route")
-                    .setTypography(Typography.TYPOGRAPHY_TITLE3)
-                    .setColor(argb(0xFFFFD166.toInt())) // Pastel Gold
+                Row.Builder()
+                    .addContent(label(context, eta.favorite.route, Typography.TYPOGRAPHY_TITLE3, GOLD))
+                    .addContent(Spacer.Builder().setWidth(dp(8f)).build())
+                    .addContent(label(context, etaSummary(eta.arrivals, now), Typography.TYPOGRAPHY_BODY1, WHITE))
                     .build(),
             )
             content.addContent(Spacer.Builder().setHeight(dp(2f)).build())
@@ -118,12 +148,7 @@ private fun tileLayout(
 
     return PrimaryLayout.Builder(deviceParameters)
         .setResponsiveContentInsetEnabled(true)
-        .setPrimaryLabelTextContent(
-            Text.Builder(context, "NYC Buses")
-                .setTypography(Typography.TYPOGRAPHY_CAPTION1)
-                .setColor(argb(0xFF5C9CE6.toInt())) // MTA Pastel Blue
-                .build(),
-        )
+        .setPrimaryLabelTextContent(label(context, "NYC Buses", Typography.TYPOGRAPHY_CAPTION1, BLUE))
         .setContent(
             Column.Builder()
                 .setModifiers(modifiers)
@@ -132,3 +157,9 @@ private fun tileLayout(
         )
         .build()
 }
+
+private fun label(context: Context, text: String, typography: Int, color: androidx.wear.protolayout.ColorBuilders.ColorProp): Text =
+    Text.Builder(context, text)
+        .setTypography(typography)
+        .setColor(color)
+        .build()

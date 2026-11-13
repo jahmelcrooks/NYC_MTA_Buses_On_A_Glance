@@ -1,19 +1,24 @@
 package com.dngro.transit.presentation
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Application
-import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Location
 import android.os.SystemClock
 import android.util.Log
-import androidx.core.content.edit
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.dngro.transit.BuildConfig
+import com.dngro.transit.data.AppPrefs
 import com.dngro.transit.data.BusApiException
 import com.dngro.transit.data.BusError
+import com.dngro.transit.data.BusRepositories
 import com.dngro.transit.data.BusRepository
+import com.dngro.transit.data.Favorite
 import com.dngro.transit.data.MtaStop
+import com.dngro.transit.data.cleanApiKey
+import com.dngro.transit.data.withFavoriteToggled
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -30,19 +35,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import java.time.Instant
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class BusViewModel(application: Application) : AndroidViewModel(application) {
-    private val repository = BusRepository(BuildConfig.MTA_API_KEY)
     private val fusedLocationClient = LocationServices.getFusedLocationProviderClient(application)
-    private val prefs = application.getSharedPreferences("nyc_buses_prefs", Context.MODE_PRIVATE)
 
-    private val _pinnedRouteIds = MutableStateFlow<Set<String>>(
-        prefs.getStringSet("pinned_routes", emptySet()) ?: emptySet(),
-    )
+    private val favorites = MutableStateFlow(AppPrefs.loadFavorites(application))
 
-    private val _uiState = MutableStateFlow<UiState>(UiState.Loading)
+    private val _uiState = MutableStateFlow(initialState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     private val _isRefreshing = MutableStateFlow(false)
@@ -52,7 +54,30 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
     private var refreshJob: Job? = null
     private var lastLoadedAtMillis = 0L
 
+    /** The nearby-stops answer, reused while the user stays put so refreshes only fetch arrivals. */
+    private var stopsCache: StopsSnapshot? = null
+
     // No refresh in init: the UI starts one once location permission is known to be granted.
+
+    /**
+     * Last session's results if they're recent, so the app opens with something on screen
+     * while the real refresh runs. Arrivals that have already left are dropped.
+     */
+    private fun initialState(): UiState {
+        val snapshot = decodeSnapshot(AppPrefs.snapshotJson(getApplication())) ?: return UiState.Loading
+        val ageMillis = System.currentTimeMillis() - snapshot.savedAtEpochMillis
+        if (ageMillis !in 0..SNAPSHOT_MAX_AGE_MS) return UiState.Loading
+
+        val routes = pruneExpired(snapshot.routes, Instant.now())
+        if (routes.isEmpty()) return UiState.Loading
+
+        val keys = favoriteKeys()
+        return UiState.Success(
+            routes = applyFavorites(routes, keys),
+            favoriteKeys = keys,
+            fromCache = true,
+        )
+    }
 
     /**
      * Locate the user, find nearby stops and load arrivals. Existing results stay on screen
@@ -68,22 +93,28 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
 
         refreshJob = viewModelScope.launch {
             try {
+                if (AppPrefs.apiKey(getApplication()).isBlank()) {
+                    throw BusApiException(BusError.NO_API_KEY, "No MTA API key configured")
+                }
+                val repository = BusRepositories.forContext(getApplication())
+
                 val location = currentLocation() ?: throw LocationUnavailableException()
-
-                val nearby = repository.getNearbyStops(location.latitude, location.longitude)
-                    .map { stop ->
+                val allStops = nearbyStops(repository, location)
+                val selection = selectWithinTiers(
+                    items = allStops.map { stop ->
                         stop to distanceMeters(location.latitude, location.longitude, stop.lat, stop.lon)
-                    }
-                    .filter { (_, meters) -> meters <= MAX_RADIUS_METERS }
-                    .sortedBy { (_, meters) -> meters }
+                    },
+                    tiers = SEARCH_TIERS_METERS,
+                    minCount = MIN_STOPS,
+                )
 
-                if (nearby.isEmpty()) {
-                    showError("No bus stops within 0.5 mi")
+                if (selection.items.isEmpty()) {
+                    showError("No bus stops within 1 mi")
                     return@launch
                 }
 
-                val stopArrivals = fetchArrivals(nearby.take(MAX_STOPS_TO_QUERY))
-                val routeLongNames = nearby
+                val stopArrivals = fetchArrivals(repository, selection.items.take(MAX_STOPS_TO_QUERY))
+                val routeLongNames = selection.items
                     .flatMap { it.first.routes }
                     .filter { it.shortName.isNotBlank() }
                     .associate { it.shortName to it.longName.orEmpty() }
@@ -91,17 +122,20 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
                 val routes = buildRoutes(
                     stopArrivals = stopArrivals,
                     routeLongNames = routeLongNames,
-                    pinnedRoutes = _pinnedRouteIds.value,
+                    favoriteKeys = favoriteKeys(),
                     maxRoutes = MAX_ROUTES_TO_DISPLAY,
                 )
                 if (routes.isEmpty()) {
-                    showError("No upcoming buses nearby (< 0.5 mi)")
+                    showError("No upcoming buses found nearby")
                     return@launch
                 }
                 showRoutes(routes)
             } catch (e: BusApiException) {
                 Log.w(TAG, "Refresh failed (${e.error}): ${e.message}")
-                showFailure(e.error.userMessage())
+                showFailure(
+                    message = e.error.userMessage(),
+                    needsApiKey = e.error == BusError.NO_API_KEY || e.error == BusError.BAD_API_KEY,
+                )
             } catch (e: LocationUnavailableException) {
                 showFailure("Couldn't get your location. Is location on?")
             } catch (e: CancellationException) {
@@ -120,21 +154,55 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun refreshIfStale(retryErrors: Boolean = true) {
         if (refreshJob?.isActive == true) return
-        when (_uiState.value) {
+        when (val state = _uiState.value) {
             is UiState.Success -> {
                 if (SystemClock.elapsedRealtime() - lastLoadedAtMillis >= STALE_AFTER_MS) refresh()
             }
-            is UiState.Error -> if (retryErrors) refresh()
+            is UiState.Error -> if (retryErrors && !state.needsApiKey) refresh()
             UiState.Loading -> refresh()
         }
     }
 
-    private suspend fun fetchArrivals(stops: List<Pair<MtaStop, Float>>): List<StopArrivals> {
+    /** Stores a key the user entered on the watch, then tries again with it. */
+    fun saveApiKey(rawKey: String) {
+        val key = cleanApiKey(rawKey)
+        if (key.isBlank()) return
+        AppPrefs.saveApiKey(getApplication(), key)
+        // Without location permission the UI shows the permission screen, and it starts the
+        // refresh itself once the permission is granted.
+        if (hasLocationPermission()) refresh()
+    }
+
+    private suspend fun nearbyStops(repository: BusRepository, location: Location): List<MtaStop> {
+        val cached = stopsCache
+        if (cached != null &&
+            SystemClock.elapsedRealtime() - cached.loadedAtMillis < STOPS_CACHE_MS &&
+            distanceMeters(location.latitude, location.longitude, cached.latitude, cached.longitude) <
+            STOPS_CACHE_MOVE_METERS
+        ) {
+            return cached.stops
+        }
+        val stops = repository.getNearbyStops(
+            lat = location.latitude,
+            lon = location.longitude,
+            radiusMeters = SEARCH_TIERS_METERS.last().toInt(),
+        )
+        if (stops.isNotEmpty()) {
+            stopsCache = StopsSnapshot(location.latitude, location.longitude, SystemClock.elapsedRealtime(), stops)
+        }
+        return stops
+    }
+
+    private suspend fun fetchArrivals(
+        repository: BusRepository,
+        stops: List<Pair<MtaStop, Float>>,
+    ): List<StopArrivals> {
         val results = coroutineScope {
             stops.map { (stop, meters) ->
                 async {
                     try {
-                        Result.success(StopArrivals(stop, meters, repository.getBusArrivals(stop.id)))
+                        val monitoring = repository.getStopMonitoring(stop.id)
+                        Result.success(StopArrivals(stop, meters, monitoring.journeys, monitoring.alerts))
                     } catch (e: BusApiException) {
                         Result.failure<StopArrivals>(e)
                     }
@@ -152,24 +220,29 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun showRoutes(routes: List<BusRouteUiModel>) {
         lastLoadedAtMillis = SystemClock.elapsedRealtime()
-        // Re-read the stars now: the user may have starred a route while this refresh ran.
-        val pinned = _pinnedRouteIds.value
-        val displayRoutes = routes
-            .map { it.copy(isPinned = it.routeShortName in pinned) }
-            .sortedWith(
-                compareByDescending<BusRouteUiModel> { it.isPinned }
-                    .thenBy { it.nearestStopDistanceMeters },
-            )
+        // Re-read the stars now: the user may have starred something while this refresh ran.
+        val keys = favoriteKeys()
+        val displayRoutes = applyFavorites(routes, keys)
         _uiState.update { current ->
             val previous = current as? UiState.Success
             UiState.Success(
                 routes = displayRoutes,
                 expandedRouteIds = previous?.expandedRouteIds.orEmpty(),
                 expandedDirectionIds = previous?.expandedDirectionIds.orEmpty(),
-                pinnedRouteIds = pinned,
+                favoriteKeys = keys,
             )
         }
         _isRefreshing.value = false
+        saveSnapshot(displayRoutes)
+    }
+
+    private fun saveSnapshot(routes: List<BusRouteUiModel>) {
+        try {
+            val snapshot = Snapshot(System.currentTimeMillis(), routes)
+            AppPrefs.saveSnapshotJson(getApplication(), encodeSnapshot(snapshot))
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't save results for next launch: ${e.message}")
+        }
     }
 
     /** A real, authoritative answer such as "no stops here". Replaces whatever is showing. */
@@ -178,18 +251,26 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         _isRefreshing.value = false
     }
 
-    /** A failed refresh. Keeps the last good results on screen (marked stale) if there are any. */
-    private fun showFailure(message: String) {
+    /**
+     * A failed refresh. Keeps the last good results on screen (marked stale) if there are any,
+     * except for API key problems: those never fix themselves, so the screen must say so.
+     */
+    private fun showFailure(message: String, needsApiKey: Boolean = false) {
         _uiState.update { current ->
-            if (current is UiState.Success) current.copy(stale = true) else UiState.Error(message)
+            if (current is UiState.Success && !needsApiKey) {
+                current.copy(stale = true, fromCache = false)
+            } else {
+                UiState.Error(message, needsApiKey)
+            }
         }
         _isRefreshing.value = false
     }
 
     /**
-     * Uses a recent cached fix immediately; otherwise asks for a fresh one and gives up
-     * after [LOCATION_TIMEOUT_MS], falling back to a cached fix only if it is under 5 minutes old
-     * (an old fix would show buses near somewhere the user has already left). Returns null otherwise.
+     * Uses a recent cached fix immediately. Otherwise asks for a low-power fix first and only
+     * turns on high-accuracy GPS if that doesn't answer in time. A cached fix is a last resort,
+     * and only if it is under 5 minutes old (an old one would show buses near somewhere the
+     * user has already left). Returns null if nothing works.
      * Callers must already hold a location permission.
      */
     @SuppressLint("MissingPermission")
@@ -203,23 +284,33 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (cached != null && ageNanos(cached) < FRESH_FIX_NANOS) return cached
 
+        val fix = requestFix(Priority.PRIORITY_BALANCED_POWER_ACCURACY, BALANCED_TIMEOUT_MS)
+            ?: requestFix(Priority.PRIORITY_HIGH_ACCURACY, HIGH_ACCURACY_TIMEOUT_MS)
+        return fix ?: cached?.takeIf { ageNanos(it) < MAX_FALLBACK_FIX_NANOS }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun requestFix(priority: Int, timeoutMs: Long): Location? {
         val cancellation = CancellationTokenSource()
         return try {
-            withTimeoutOrNull(LOCATION_TIMEOUT_MS) {
+            withTimeoutOrNull(timeoutMs) {
                 try {
-                    fusedLocationClient
-                        .getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, cancellation.token)
-                        .awaitTask()
+                    fusedLocationClient.getCurrentLocation(priority, cancellation.token).awaitTask()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    null
+                    null // SecurityException, Play services failure, etc.
                 }
-            } ?: cached?.takeIf { ageNanos(it) < MAX_FALLBACK_FIX_NANOS }
+            }
         } finally {
             cancellation.cancel()
         }
     }
+
+    private fun hasLocationPermission(): Boolean =
+        listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION).any {
+            ContextCompat.checkSelfPermission(getApplication(), it) == PackageManager.PERMISSION_GRANTED
+        }
 
     private fun ageNanos(location: Location): Long =
         SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
@@ -245,17 +336,18 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun toggleRoutePin(routeShortName: String) {
-        val current = _pinnedRouteIds.value
-        val updated = if (current.contains(routeShortName)) {
-            current - routeShortName
-        } else {
-            current + routeShortName
-        }
-        _pinnedRouteIds.value = updated
-        prefs.edit {
-            putStringSet("pinned_routes", updated)
-        }
+    /** Stars or unstars "this route, this direction, from this stop". */
+    fun toggleFavorite(route: BusRouteUiModel, direction: BusDirectionUiModel) {
+        if (direction.stopId.isBlank()) return
+        val favorite = Favorite(
+            stopId = direction.stopId,
+            stopName = direction.stopName,
+            route = route.routeShortName,
+            destination = direction.destinationName,
+        )
+        val updated = withFavoriteToggled(favorites.value, favorite)
+        favorites.value = updated
+        AppPrefs.saveFavorites(getApplication(), updated)
 
         try {
             androidx.wear.tiles.TileService.getUpdater(getApplication())
@@ -270,34 +362,49 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
             Log.d(TAG, "Complication update info: ${e.message}")
         }
 
+        val keys = favoriteKeys()
         _uiState.update { state ->
             if (state is UiState.Success) {
-                val updatedRoutes = state.routes.map { route ->
-                    if (route.routeShortName == routeShortName) {
-                        route.copy(isPinned = updated.contains(routeShortName))
-                    } else {
-                        route
-                    }
-                }.sortedWith(
-                    compareByDescending<BusRouteUiModel> { it.isPinned }
-                        .thenBy { it.nearestStopDistanceMeters },
-                )
-                state.copy(routes = updatedRoutes, pinnedRouteIds = updated)
+                state.copy(routes = applyFavorites(state.routes, keys), favoriteKeys = keys)
             } else {
                 state
             }
         }
     }
 
+    private fun favoriteKeys(): Set<String> = favorites.value.map { it.key }.toSet()
+
+    private class StopsSnapshot(
+        val latitude: Double,
+        val longitude: Double,
+        val loadedAtMillis: Long,
+        val stops: List<MtaStop>,
+    )
+
     private companion object {
         const val TAG = "BusViewModel"
         const val MAX_ROUTES_TO_DISPLAY = 15
-        const val MAX_RADIUS_METERS = 804.67f // 0.5 miles
+
+        /**
+         * Search close first (0.25 mi), widening to 0.5 mi and then 1 mi only if that finds fewer
+         * than [MIN_STOPS] stops. Dense areas get a short list; sparse areas still get results.
+         */
+        val SEARCH_TIERS_METERS = listOf(402f, 805f, 1609f)
+        const val MIN_STOPS = 3
 
         /** Arrivals are fetched per stop, so this caps the requests made per refresh. */
-        const val MAX_STOPS_TO_QUERY = 8
+        const val MAX_STOPS_TO_QUERY = 6
         const val STALE_AFTER_MS = 60_000L
-        const val LOCATION_TIMEOUT_MS = 15_000L
+
+        /** Reuse the stop list for this long, while the user stays within the distance below. */
+        const val STOPS_CACHE_MS = 10 * 60_000L
+        const val STOPS_CACHE_MOVE_METERS = 150f
+
+        /** Saved results older than this are ignored on launch (the user has likely moved on). */
+        const val SNAPSHOT_MAX_AGE_MS = 30 * 60_000L
+
+        const val BALANCED_TIMEOUT_MS = 8_000L
+        const val HIGH_ACCURACY_TIMEOUT_MS = 12_000L
         const val FRESH_FIX_NANOS = 60_000_000_000L // 60 s
 
         /** A cached fix older than this is not trusted as "where the user is now". */
@@ -308,8 +415,8 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
 private class LocationUnavailableException : Exception()
 
 private fun BusError.userMessage(): String = when (this) {
-    BusError.NO_API_KEY -> "MTA API key missing. See the README."
-    BusError.BAD_API_KEY -> "MTA rejected the API key."
+    BusError.NO_API_KEY -> "Add your MTA API key to get started."
+    BusError.BAD_API_KEY -> "MTA rejected the API key. Enter a new one."
     BusError.NETWORK -> "No connection. Check Wi-Fi or LTE."
     BusError.SERVER -> "MTA data unavailable. Try again."
 }

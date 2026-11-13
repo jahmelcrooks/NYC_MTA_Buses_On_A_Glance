@@ -23,7 +23,11 @@ android {
             localProperties.load(localPropertiesFile.inputStream())
         }
 
-        buildConfigField("String", "MTA_API_KEY", "\"${localProperties.getProperty("mta.api.key") ?: ""}\"")
+        // Escaped so a stray quote or backslash in the key can't break the generated BuildConfig.
+        val mtaKey = (localProperties.getProperty("mta.api.key") ?: "").trim()
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+        buildConfigField("String", "MTA_API_KEY", "\"$mtaKey\"")
     }
 
     buildTypes {
@@ -57,6 +61,7 @@ dependencies {
     implementation(libs.compose.material)
     implementation(libs.compose.foundation)
     implementation(libs.wear.tooling.preview)
+    implementation(libs.androidx.wear)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.runtime.compose)

@@ -6,6 +6,7 @@ composeIconsExtended = "1.7.0"
 composeMaterial = "1.6.2"
 composeFoundation = "1.6.2"
 wearToolingPreview = "1.0.0"
+wear = "1.3.0"
 activityCompose = "1.8.0"
 coreSplashscreen = "1.0.1"
 tiles = "1.4.0"
@@ -37,6 +38,7 @@ ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 compose-material = { group = "androidx.wear.compose", name = "compose-material", version.ref = "composeMaterial" }
 compose-foundation = { group = "androidx.wear.compose", name = "compose-foundation", version.ref = "composeFoundation" }
 wear-tooling-preview = { group = "androidx.wear", name = "wear-tooling-preview", version.ref = "wearToolingPreview" }
+androidx-wear = { group = "androidx.wear", name = "wear", version.ref = "wear" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
 tiles = { group = "androidx.wear.tiles", name = "tiles", version.ref = "tiles" }
