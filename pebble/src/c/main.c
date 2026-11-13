@@ -396,7 +396,7 @@ static void open_detail(int index) {
 // ---------------------------------------------------------------------------
 // App lifecycle
 
-static void tick(struct tm *now, TimeUnit changed) {
+static void tick(struct tm *now, TimeUnits changed) {
   // Redraw the minutes, and ask the phone for fresh predictions while the app is open.
   if (s_menu) menu_layer_reload_data(s_menu);
   layout_detail();
