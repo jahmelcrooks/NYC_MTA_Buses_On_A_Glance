@@ -10,6 +10,7 @@ val MtaPastelBlue = Color(0xFF5C9CE6)     // MTA Bus / Line Blue
 val MtaPastelGold = Color(0xFFFFD166)     // Subway / Express Gold
 val MtaPastelGreen = Color(0xFF70C1B3)    // Crosstown / Arriving Green
 val MtaPastelPurple = Color(0xFFB39DDB)   // Flushing Line Purple
+val MtaPastelRed = Color(0xFFFF8A80)      // Crowded / Full
 val MtaDarkSurface = Color(0xFF1E242E)    // Dark Navy Surface
 val MtaDarkBackground = Color(0xFF000000) // OLED True Black
 

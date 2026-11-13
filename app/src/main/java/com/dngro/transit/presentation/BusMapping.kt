@@ -146,6 +146,7 @@ private fun List<MonitoredVehicleJourney>.toArrivals(): List<BusArrivalDetail> =
     distinctBy { it.vehicleRef ?: "t:${it.monitoredCall.expectedArrivalTime}" }
         .map { journey ->
             val distance = journey.monitoredCall.extensions?.distances?.presentableDistance
+            val crowd = crowdInfo(journey.occupancy, journey.monitoredCall.extensions?.capacities)
             BusArrivalDetail(
                 id = "${journey.vehicleRef ?: journey.lineName}_${journey.monitoredCall.expectedArrivalTime}",
                 distanceText = if (distance.isNullOrEmpty() || distance.contains("approaching", ignoreCase = true)) {
@@ -154,6 +155,8 @@ private fun List<MonitoredVehicleJourney>.toArrivals(): List<BusArrivalDetail> =
                     distance
                 },
                 expected = parseInstant(journey.monitoredCall.expectedArrivalTime),
+                crowding = crowd.level,
+                passengers = crowd.passengers,
             )
         }
         .sortedBy { it.expected ?: Instant.MAX }

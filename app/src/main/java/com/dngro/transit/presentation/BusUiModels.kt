@@ -76,6 +76,9 @@ data class BusArrivalDetail(
      */
     @Serializable(with = InstantEpochMillisSerializer::class)
     val expected: Instant?,
+    /** How full the bus is, if it reports it (defaults keep older saved snapshots readable). */
+    val crowding: Crowding? = null,
+    val passengers: Int? = null,
 )
 
 object InstantEpochMillisSerializer : KSerializer<Instant> {
