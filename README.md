@@ -6,6 +6,8 @@ A 100% standalone **Wear OS** Android application designed for quick, seamless a
 
 ## 🌟 Key Features
 
+**v1.10:** Settings screen (gear button next to refresh) for the search radius and API key; crown / rotating bezel scrolling (enabled explicitly, not yet tested on a watch).
+
 * **⌚ Standalone watch app:** Runs on the watch itself with no companion phone (`standalone="true"`). The watch needs its own Wi-Fi or LTE for live data.
 * **📍 On-watch location:** Searches within a radius you pick in Settings (0.25, 0.5, 0.75 or 1 mi; default 0.5 mi). Use a small radius in dense Manhattan, a bigger one where stops are sparse. It asks for a low-power fix first and only turns on high-accuracy GPS if that doesn't answer in time.
 * **⚡ Opens instantly:** Shows your last results right away (if under 30 minutes old, with departed buses removed) while it refreshes in the background.
