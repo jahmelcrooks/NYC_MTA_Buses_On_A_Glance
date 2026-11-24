@@ -2,6 +2,7 @@ package com.dngro.transit.presentation
 
 import com.dngro.transit.data.MonitoredVehicleJourney
 import com.dngro.transit.data.MtaStop
+import com.dngro.transit.data.ScheduledTrip
 import com.dngro.transit.data.ServiceAlert
 import com.dngro.transit.data.alertsForRoute
 import com.dngro.transit.data.favoriteKey
@@ -9,6 +10,11 @@ import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.util.Locale
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 // Pure functions (no Android types) so they can be unit-tested on the JVM.
 
@@ -21,6 +27,8 @@ internal data class StopArrivals(
     val distanceMeters: Float,
     val journeys: List<MonitoredVehicleJourney>,
     val alerts: List<ServiceAlert> = emptyList(),
+    /** Timetabled buses at this stop (any time today); merged with the live ones in buildRoutes. */
+    val scheduled: List<ScheduledTrip> = emptyList(),
 )
 
 /**
@@ -35,15 +43,20 @@ internal fun buildRoutes(
     routeLongNames: Map<String, String>,
     favoriteKeys: Set<String>,
     maxRoutes: Int,
+    now: Instant = Instant.now(),
 ): List<BusRouteUiModel> {
     val byRoute = LinkedHashMap<String, LinkedHashMap<String, BusDirectionUiModel>>()
 
     for (entry in stopArrivals.sortedBy { it.distanceMeters }) {
-        val grouped = entry.journeys
+        val live = entry.journeys
             .filter { it.lineName.isNotBlank() }
             .groupBy { it.lineName to it.destinationName.ifEmpty { UNKNOWN_DESTINATION } }
+        val scheduled = groupScheduled(entry.scheduled, live.keys)
 
-        for ((key, journeys) in grouped) {
+        for (key in (live.keys + scheduled.keys).distinct()) {
+            val journeys = live[key].orEmpty()
+            val arrivals = mergeArrivals(journeys.toArrivals(), journeys, scheduled[key].orEmpty(), now)
+            if (arrivals.isEmpty()) continue
             val (route, destination) = key
             val directions = byRoute.getOrPut(route) { LinkedHashMap() }
             val existing = directions[destination]
@@ -63,7 +76,7 @@ internal fun buildRoutes(
                 stopName = entry.stop.name,
                 stopDistanceMeters = entry.distanceMeters,
                 stopDistanceText = formatDistanceToUser(entry.distanceMeters),
-                arrivals = journeys.toArrivals(),
+                arrivals = arrivals,
             )
         }
     }
@@ -142,6 +155,78 @@ internal fun pruneExpired(
     }
 }
 
+/** How far ahead timetabled buses are listed. */
+private const val SCHEDULE_HORIZON_SECONDS = 2 * 60 * 60L
+
+/**
+ * Timetabled trips grouped like the live ones (route to destination). A headsign that differs from
+ * a live destination only in spacing, punctuation or case joins that live group.
+ */
+private fun groupScheduled(
+    trips: List<ScheduledTrip>,
+    liveKeys: Set<Pair<String, String>>,
+): Map<Pair<String, String>, List<ScheduledTrip>> {
+    fun norm(s: String) = s.filter { it.isLetterOrDigit() }.uppercase()
+    val liveByNorm = liveKeys.associateBy { (route, dest) -> route to norm(dest) }
+    return trips
+        .filter { it.route.isNotBlank() }
+        .groupBy { trip -> liveByNorm[trip.route to norm(trip.headsign)] ?: (trip.route to trip.headsign) }
+}
+
+/**
+ * Live arrivals plus the timetabled ones no live bus already covers, soonest first.
+ * A timetabled trip is covered if a live bus reports the same trip id, or if it's due before
+ * the last live bus (MTA tracks the buses that are on their way; earlier timetable slots are
+ * either those buses or ones that won't come).
+ */
+internal fun mergeArrivals(
+    liveArrivals: List<BusArrivalDetail>,
+    journeys: List<MonitoredVehicleJourney>,
+    scheduled: List<ScheduledTrip>,
+    now: Instant,
+): List<BusArrivalDetail> {
+    val liveTripIds = journeys.mapNotNull { it.tripId() }.toSet()
+    val lastLive = liveArrivals.mapNotNull { it.expected }.maxOrNull()
+    val horizon = now.plusSeconds(SCHEDULE_HORIZON_SECONDS)
+    val extra = scheduled
+        .asSequence()
+        .filter { it.tripId.isEmpty() || it.tripId !in liveTripIds }
+        .filter { !it.time.isBefore(now.minusSeconds(60)) && it.time.isBefore(horizon) }
+        .filter { lastLive == null || it.time.isAfter(lastLive.plusSeconds(60)) }
+        .distinctBy { it.time }
+        .map { trip ->
+            BusArrivalDetail(
+                id = "s_${trip.tripId}_${trip.time.toEpochMilli()}",
+                distanceText = "Scheduled",
+                expected = trip.time,
+                live = false,
+            )
+        }
+        .toList()
+    return (liveArrivals + extra)
+        .sortedBy { it.expected ?: Instant.MAX }
+        .take(MAX_ARRIVALS_PER_DIRECTION)
+}
+
+/** False for a bus waiting at the terminal or finishing its previous trip: its time is the timetable's. */
+internal fun MonitoredVehicleJourney.isLiveTracked(): Boolean {
+    val status = progressStatus.textValue()?.lowercase().orEmpty()
+    return "layover" !in status && "prevtrip" !in status
+}
+
+internal fun MonitoredVehicleJourney.tripId(): String? {
+    val ref = framedVehicleJourneyRef
+    val obj = (ref as? JsonObject) ?: (ref as? JsonArray)?.firstOrNull() as? JsonObject
+    return obj?.get("DatedVehicleJourneyRef").textValue()?.takeIf { it.isNotBlank() }
+}
+
+private fun JsonElement?.textValue(): String? = when (this) {
+    is JsonNull, null -> null
+    is JsonPrimitive -> content
+    is JsonArray -> firstOrNull().textValue()
+    else -> null
+}
+
 private fun List<MonitoredVehicleJourney>.toArrivals(): List<BusArrivalDetail> =
     distinctBy { it.vehicleRef ?: "t:${it.monitoredCall.expectedArrivalTime}" }
         .map { journey ->
@@ -157,6 +242,7 @@ private fun List<MonitoredVehicleJourney>.toArrivals(): List<BusArrivalDetail> =
                 expected = parseInstant(journey.monitoredCall.expectedArrivalTime),
                 crowding = crowd.level,
                 passengers = crowd.passengers,
+                live = journey.isLiveTracked(),
             )
         }
         .sortedBy { it.expected ?: Instant.MAX }

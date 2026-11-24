@@ -103,6 +103,18 @@ class BusRepository(private val apiKey: String) {
         )
     }
 
+    /**
+     * Timetabled buses at one stop for one service date (see serviceDates()).
+     * @throws BusApiException on a network or HTTP failure; an unreadable body gives an empty list.
+     */
+    suspend fun getSchedule(stopId: String, date: java.time.LocalDate): List<ScheduledTrip> {
+        requireKey()
+        val response = call {
+            apiService.getScheduleForStop(stopId = stopId, date = date.toString(), apiKey = apiKey)
+        }
+        return parseSchedule(response)
+    }
+
     /** Just the buses, for callers (tile, complication) that don't show alerts. */
     suspend fun getBusArrivals(stopId: String): List<MonitoredVehicleJourney> =
         getStopMonitoring(stopId).journeys

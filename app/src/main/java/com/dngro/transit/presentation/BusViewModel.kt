@@ -22,6 +22,8 @@ import com.dngro.transit.data.withPlaceSaved
 import com.dngro.transit.alerts.ArrivalAlerts
 import com.dngro.transit.data.Favorite
 import com.dngro.transit.data.MtaStop
+import com.dngro.transit.data.ScheduledTrip
+import com.dngro.transit.data.serviceDates
 import com.dngro.transit.data.cleanApiKey
 import com.dngro.transit.data.normalizeRadiusMiles
 import com.dngro.transit.data.radiusLabel
@@ -80,6 +82,15 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The nearby-stops answer, reused while the user stays put so refreshes only fetch arrivals. */
     private var stopsCache: StopsSnapshot? = null
+
+    /**
+     * Timetables by "stopId|date". A day's timetable doesn't change, so it's fetched once; a
+     * failed fetch is remembered for a while so an unsupported or down endpoint isn't retried
+     * on every refresh.
+     */
+    private val scheduleCache = java.util.concurrent.ConcurrentHashMap<String, CachedSchedule>()
+
+    private class CachedSchedule(val trips: List<ScheduledTrip>, val ok: Boolean, val atMillis: Long)
 
     // No refresh in init: the UI starts one once location permission is known to be granted.
 
@@ -248,8 +259,11 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
             stops.map { (stop, meters) ->
                 async {
                     try {
+                        val schedule = async { scheduleFor(repository, stop.id) }
                         val monitoring = repository.getStopMonitoring(stop.id)
-                        Result.success(StopArrivals(stop, meters, monitoring.journeys, monitoring.alerts))
+                        Result.success(
+                            StopArrivals(stop, meters, monitoring.journeys, monitoring.alerts, schedule.await()),
+                        )
                     } catch (e: BusApiException) {
                         Result.failure<StopArrivals>(e)
                     }
@@ -263,6 +277,29 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
                 ?: BusApiException(BusError.SERVER, "No data returned")
         }
         return succeeded
+    }
+
+    /** Today's timetable for a stop (plus last night's before 4 a.m.); empty if unavailable. */
+    private suspend fun scheduleFor(repository: BusRepository, stopId: String): List<ScheduledTrip> {
+        val now = SystemClock.elapsedRealtime()
+        return serviceDates(Instant.now()).flatMap { date ->
+            val key = "$stopId|$date"
+            val cached = scheduleCache[key]
+            if (cached != null && (cached.ok || now - cached.atMillis < SCHEDULE_RETRY_MS)) {
+                return@flatMap cached.trips
+            }
+            val trips = withTimeoutOrNull(SCHEDULE_TIMEOUT_MS) {
+                try {
+                    repository.getSchedule(stopId, date)
+                } catch (e: BusApiException) {
+                    Log.w(TAG, "No timetable for $stopId (${e.error})")
+                    null
+                }
+            }
+            if (scheduleCache.size > MAX_CACHED_SCHEDULES) scheduleCache.clear()
+            scheduleCache[key] = CachedSchedule(trips.orEmpty(), ok = trips != null, atMillis = now)
+            trips.orEmpty()
+        }
     }
 
     private fun showRoutes(routes: List<BusRouteUiModel>) {
@@ -392,9 +429,12 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val repository = BusRepositories.forContext(getApplication())
                 val monitoring = repository.getStopMonitoring(direction.stopId)
+                val schedule = scheduleFor(repository, direction.stopId)
                 val stop = MtaStop(id = direction.stopId, name = direction.stopName)
                 val routes = buildRoutes(
-                    stopArrivals = listOf(StopArrivals(stop, direction.stopDistanceMeters, monitoring.journeys, monitoring.alerts)),
+                    stopArrivals = listOf(
+                        StopArrivals(stop, direction.stopDistanceMeters, monitoring.journeys, monitoring.alerts, schedule),
+                    ),
                     routeLongNames = emptyMap(),
                     favoriteKeys = favoriteKeys(),
                     maxRoutes = MAX_ROUTES_TO_DISPLAY,
@@ -514,6 +554,9 @@ class BusViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private companion object {
+        private const val SCHEDULE_TIMEOUT_MS = 8_000L
+        private const val SCHEDULE_RETRY_MS = 10 * 60 * 1000L
+        private const val MAX_CACHED_SCHEDULES = 40
         const val TAG = "BusViewModel"
         const val MAX_ROUTES_TO_DISPLAY = 15
 

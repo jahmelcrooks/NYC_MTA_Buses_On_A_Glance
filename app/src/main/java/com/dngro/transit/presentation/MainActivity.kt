@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.outlined.NotificationsNone
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +57,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -753,6 +756,7 @@ fun DirectionItem(
                 val isArriving = minutes != null && minutes <= 1L
                 val timeColor = when {
                     reach == Reach.TOO_SOON -> MaterialTheme.colors.onSurface.copy(alpha = 0.4f)
+                    !arrival.live -> MaterialTheme.colors.onSurface.copy(alpha = 0.7f)
                     isArriving -> MtaPastelGreen
                     else -> MtaPastelGold
                 }
@@ -764,12 +768,19 @@ fun DirectionItem(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = if (minutesText.isEmpty()) arrival.distanceText else "${arrival.distanceText} ($minutesText)",
-                        style = MaterialTheme.typography.body2,
-                        color = timeColor,
-                        fontWeight = if (isArriving) FontWeight.Bold else FontWeight.Normal,
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f, fill = false),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        LiveIndicator(live = arrival.live)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (minutesText.isEmpty()) arrival.distanceText else "${arrival.distanceText} ($minutesText)",
+                            style = MaterialTheme.typography.body2,
+                            color = timeColor,
+                            fontWeight = if (isArriving && arrival.live) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
                     Text(
                         text = clockTime,
                         style = MaterialTheme.typography.caption2,
@@ -1034,6 +1045,8 @@ private fun NextBusCard(next: NextBus, now: Instant) {
             color = MaterialTheme.colors.onSurface.copy(alpha = 0.6f),
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
+            LiveIndicator(live = next.live)
+            Spacer(modifier = Modifier.width(6.dp))
             Text(text = next.route, fontWeight = FontWeight.ExtraBold, fontSize = 20.sp, color = Color.White)
             Spacer(modifier = Modifier.width(8.dp))
             Text(text = timeText, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = color)
@@ -1139,4 +1152,28 @@ private fun crowdColor(level: Crowding?): Color = when (level) {
     Crowding.STANDING -> MtaPastelGold
     Crowding.FULL -> MtaPastelRed
     null -> MaterialTheme.colors.onSurface.copy(alpha = 0.6f)
+}
+
+/**
+ * Live vs timetable marker: a soft green dot for a tracked bus's real-time prediction, a faint
+ * clock for a scheduled time (from the timetable, or a bus still waiting at its terminal).
+ */
+@Composable
+private fun LiveIndicator(live: Boolean) {
+    if (live) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(MtaPastelGreen.copy(alpha = 0.85f))
+                .semantics { contentDescription = "Live" },
+        )
+    } else {
+        Icon(
+            imageVector = Icons.Outlined.Schedule,
+            contentDescription = "Scheduled",
+            tint = MaterialTheme.colors.onSurface.copy(alpha = 0.5f),
+            modifier = Modifier.size(12.dp),
+        )
+    }
 }

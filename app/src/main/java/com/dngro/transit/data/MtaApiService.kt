@@ -1,6 +1,8 @@
 package com.dngro.transit.data
 
+import kotlinx.serialization.json.JsonElement
 import retrofit2.http.GET
+import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface MtaApiService {
@@ -22,4 +24,15 @@ interface MtaApiService {
         @Query("key") apiKey: String,
         @Query("version") version: String = "2",
     ): SiriResponse
+
+    /**
+     * OneBusAway timetable for one stop and service date (YYYY-MM-DD). Returned raw and read
+     * tolerantly by parseSchedule(): it's a bonus, so an odd shape must never break anything.
+     */
+    @GET("api/where/schedule-for-stop/{stopId}.json")
+    suspend fun getScheduleForStop(
+        @Path("stopId") stopId: String,
+        @Query("date") date: String,
+        @Query("key") apiKey: String,
+    ): JsonElement
 }

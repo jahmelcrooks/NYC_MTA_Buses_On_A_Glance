@@ -122,6 +122,12 @@ data class MonitoredVehicleJourney(
     /** "seatsAvailable", "standingAvailable" or "full", on buses that report it. Kept raw: see Crowding.kt. */
     @SerialName("Occupancy") val occupancy: JsonElement? = null,
 
+    /** "layover" (waiting at the terminal) or "prevTrip" (still on its previous trip), else absent. */
+    @SerialName("ProgressStatus") val progressStatus: JsonElement? = null,
+
+    /** Holds DatedVehicleJourneyRef, the trip id, used to match a live bus to its timetable entry. */
+    @SerialName("FramedVehicleJourneyRef") val framedVehicleJourneyRef: JsonElement? = null,
+
     @SerialName("MonitoredCall") val monitoredCall: MonitoredCall = MonitoredCall(),
 )
 

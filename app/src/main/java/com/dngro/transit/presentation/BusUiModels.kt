@@ -79,6 +79,8 @@ data class BusArrivalDetail(
     /** How full the bus is, if it reports it (defaults keep older saved snapshots readable). */
     val crowding: Crowding? = null,
     val passengers: Int? = null,
+    /** True for a tracked bus's prediction; false for a timetable time (or a bus still at the terminal). */
+    val live: Boolean = true,
 )
 
 object InstantEpochMillisSerializer : KSerializer<Instant> {

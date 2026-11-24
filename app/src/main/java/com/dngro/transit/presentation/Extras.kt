@@ -48,6 +48,7 @@ internal data class NextBus(
     val walkLabel: String,
     val crowding: Crowding? = null,
     val passengers: Int? = null,
+    val live: Boolean = true,
 )
 
 /**
@@ -86,6 +87,7 @@ internal fun nextBus(routes: List<BusRouteUiModel>, now: Instant): NextBus? {
         walkLabel = walkLabel(best.direction.stopDistanceMeters),
         crowding = best.arrival.crowding,
         passengers = best.arrival.passengers,
+        live = best.arrival.live,
     )
 }
 
