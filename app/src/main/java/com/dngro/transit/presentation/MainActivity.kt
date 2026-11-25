@@ -1021,13 +1021,13 @@ private fun SettingsScreen(
 private fun NextBusCard(next: NextBus, now: Instant) {
     val minutes = minutesUntil(next.expected, now)
     val timeText = if (minutes <= 0L) "Now" else "$minutes min"
+    // A bus that's too soon to walk to still stands out: it's right there.
     val color = when (next.reach) {
-        Reach.TOO_SOON -> MaterialTheme.colors.onSurface.copy(alpha = 0.5f)
-        Reach.TIGHT -> MtaPastelGold
+        Reach.TOO_SOON, Reach.TIGHT -> MtaPastelGold
         Reach.OK -> MtaPastelGreen
     }
     val hint = when (next.reach) {
-        Reach.TOO_SOON -> "Can't make it · ${next.walkLabel}"
+        Reach.TOO_SOON -> "Too soon to walk there · ${next.walkLabel}"
         Reach.TIGHT -> "Hurry · ${next.walkLabel}"
         Reach.OK -> next.walkLabel
     }
@@ -1071,6 +1071,15 @@ private fun NextBusCard(next: NextBus, now: Instant) {
                 text = detail,
                 style = MaterialTheme.typography.caption2,
                 color = MaterialTheme.colors.onSurface.copy(alpha = 0.7f),
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (next.thenRoute != null && next.thenExpected != null) {
+            val thenMinutes = minutesUntil(next.thenExpected, now)
+            Text(
+                text = "Then ${next.thenRoute} in $thenMinutes min",
+                style = MaterialTheme.typography.caption2,
+                color = MtaPastelGreen,
                 textAlign = TextAlign.Center,
             )
         }

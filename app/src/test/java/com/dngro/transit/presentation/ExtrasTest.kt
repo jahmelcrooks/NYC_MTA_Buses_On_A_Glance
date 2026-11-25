@@ -40,7 +40,10 @@ class ExtrasTest {
         assertEquals(389L, walkSeconds(400f))
         assertEquals(0L, walkSeconds(Float.MAX_VALUE))
         assertEquals("7 min walk", walkLabel(400f))
-        assertEquals("1 min walk", walkLabel(5f))
+        assertEquals("At the stop", walkLabel(5f))
+        assertEquals("At the stop", walkLabel(60f))
+        assertEquals(0L, walkSeconds(60f))
+        assertEquals("1 min walk", walkLabel(61f))
         assertEquals("", walkLabel(Float.MAX_VALUE))
     }
 
@@ -55,16 +58,30 @@ class ExtrasTest {
     }
 
     @Test
-    fun nextBus_skipsBusesYouCannotCatch_whenAnotherIsReachable() {
+    fun nextBus_showsABusTooSoonToReach_plusTheNextYouCanMake() {
         val routes = listOf(
-            route("B41", direction(meters = 400f, arrivals = listOf(arrival(120), arrival(900, "2 stops away")))),
+            route("B41", direction(meters = 400f, arrivals = listOf(arrival(120, "1 stop away"), arrival(900)))),
         )
 
         val next = nextBus(routes, now)!!
 
-        assertEquals(now.plusSeconds(900), next.expected)
-        assertEquals("2 stops away", next.stopsAwayText)
+        assertEquals(now.plusSeconds(120), next.expected)
+        assertEquals("1 stop away", next.stopsAwayText)
+        assertEquals(Reach.TOO_SOON, next.reach)
+        assertEquals("B41", next.thenRoute)
+        assertEquals(now.plusSeconds(900), next.thenExpected)
+    }
+
+    @Test
+    fun nextBus_atTheStop_aBusOneMinuteAwayIsCatchable() {
+        val routes = listOf(route("B41", direction(meters = 40f, arrivals = listOf(arrival(60), arrival(900)))))
+
+        val next = nextBus(routes, now)!!
+
+        assertEquals(now.plusSeconds(60), next.expected)
         assertEquals(Reach.OK, next.reach)
+        assertEquals("At the stop", next.walkLabel)
+        assertNull(next.thenRoute)
     }
 
     @Test
@@ -75,6 +92,7 @@ class ExtrasTest {
 
         assertEquals(Reach.TOO_SOON, next.reach)
         assertEquals("", next.stopsAwayText)
+        assertNull(next.thenRoute)
     }
 
     @Test

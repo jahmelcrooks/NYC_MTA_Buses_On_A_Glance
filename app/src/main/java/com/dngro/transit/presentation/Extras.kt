@@ -11,14 +11,23 @@ private const val WALK_METERS_PER_SECOND = 1.34 // about 3 mph
 /** Straight-line distance understates a walk along streets, so pad it. */
 private const val WALK_DETOUR_FACTOR = 1.3
 
+/**
+ * Within this distance you're treated as already at the stop: watch GPS is often off by this
+ * much, and a bus that's 1 minute away must never look "too soon" while you stand at the stop.
+ */
+private const val AT_STOP_METERS = 60f
+
+private fun distanceKnown(meters: Float) = meters < Float.MAX_VALUE / 2
+
 internal fun walkSeconds(straightLineMeters: Float): Long =
-    if (straightLineMeters >= Float.MAX_VALUE / 2) 0L
+    if (!distanceKnown(straightLineMeters) || straightLineMeters <= AT_STOP_METERS) 0L
     else ceil(straightLineMeters * WALK_DETOUR_FACTOR / WALK_METERS_PER_SECOND).toLong()
 
-/** "1 min walk", "6 min walk". Empty when the distance is unknown. */
+/** "At the stop", "1 min walk", "6 min walk". Empty when the distance is unknown. */
 internal fun walkLabel(straightLineMeters: Float): String {
+    if (!distanceKnown(straightLineMeters)) return ""
     val seconds = walkSeconds(straightLineMeters)
-    if (seconds <= 0L) return ""
+    if (seconds <= 0L) return "At the stop"
     return "${maxOf(1L, ceil(seconds / 60.0).toLong())} min walk"
 }
 
@@ -49,12 +58,16 @@ internal data class NextBus(
     val crowding: Crowding? = null,
     val passengers: Int? = null,
     val live: Boolean = true,
+    /** When this bus is too soon to walk to: the next one you can make, as (route, time). */
+    val thenRoute: String? = null,
+    val thenExpected: Instant? = null,
 )
 
 /**
- * The soonest bus you can still catch. Starred directions win if any of them has a bus coming;
- * otherwise everything nearby is considered. Buses you can't reach in time are skipped unless
- * nothing else is left.
+ * The soonest bus. Starred directions win if any of them has a bus coming; otherwise everything
+ * nearby is considered. A bus that's too soon to walk to is still shown (a bus 1 minute away is
+ * the most useful thing to know when you're near the stop), together with the next one you can
+ * make.
  */
 internal fun nextBus(routes: List<BusRouteUiModel>, now: Instant): NextBus? {
     data class Candidate(val route: String, val direction: BusDirectionUiModel, val arrival: BusArrivalDetail, val expected: Instant)
@@ -74,8 +87,12 @@ internal fun nextBus(routes: List<BusRouteUiModel>, now: Instant): NextBus? {
     if (pool.isEmpty()) return null
 
     fun catchOf(c: Candidate) = reachability(c.expected, now, walkSeconds(c.direction.stopDistanceMeters))
-    val reachable = pool.filter { catchOf(it) != Reach.TOO_SOON }
-    val best = (reachable.ifEmpty { pool }).minByOrNull { it.expected } ?: return null
+    val best = pool.minByOrNull { it.expected } ?: return null
+    val then = if (catchOf(best) == Reach.TOO_SOON) {
+        pool.filter { catchOf(it) != Reach.TOO_SOON }.minByOrNull { it.expected }
+    } else {
+        null
+    }
 
     val distanceText = best.arrival.distanceText
     return NextBus(
@@ -88,6 +105,8 @@ internal fun nextBus(routes: List<BusRouteUiModel>, now: Instant): NextBus? {
         crowding = best.arrival.crowding,
         passengers = best.arrival.passengers,
         live = best.arrival.live,
+        thenRoute = then?.route,
+        thenExpected = then?.expected,
     )
 }
 
